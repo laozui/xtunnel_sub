@@ -25,6 +25,7 @@ import android.content.Intent;
 import android.net.VpnService;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.widget.Toast;
 import com.x.tunnel.tunnel.Tunnel;
 import android.content.pm.PackageManager.NameNotFoundException;
@@ -144,7 +145,7 @@ public class TProxyService extends VpnService {
 
                         tproxy_conf += "socks5:\n" +
                                 "  port: " + prefs.getSocksPort() + "\n" +
-                                "  address: '" + prefs.getSocksAddress() + "'\n" +
+                                "  address: '127.0.0.1'\n" +
                                 "  udp: '" + (prefs.getUdpInTcp() ? "tcp" : "udp") + "'\n";
 
                         if (!prefs.getSocksUdpAddress().isEmpty()) {
@@ -216,6 +217,7 @@ public class TProxyService extends VpnService {
                                             Toast.makeText(appContext, "启动成功", Toast.LENGTH_SHORT).show();
                                         }
                                     });
+                                    Log.i("xtunnel", "===== 启动成功 =====\n" + Tunnel.GetTunnelStatus());
                                 } else {
                                     new Handler(Looper.getMainLooper()).post(new Runnable() {
                                         @Override
@@ -223,6 +225,7 @@ public class TProxyService extends VpnService {
                                             Toast.makeText(appContext, "服务器连接失败", Toast.LENGTH_SHORT).show();
                                         }
                                     });
+                                    Log.e("xtunnel", "===== 服务器连接失败 =====\n" + Tunnel.GetTunnelStatus());
                                 }
                             }
                         }, "xtunnel-ws-wait").start();
@@ -248,6 +251,33 @@ public class TProxyService extends VpnService {
             tunFd = null;
         }
         System.exit(0);
+    }
+
+    private void startDiagnosticsLogger() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (!Thread.currentThread().isInterrupted()) {
+                    try { Thread.sleep(5000); } catch (InterruptedException e) { break; }
+                    try {
+                        String status = Tunnel.GetTunnelStatus();
+                        Log.i("xtunnel", "===== TUNNEL STATUS =====\n" + status);
+                        writeStatusFile(status);
+                    } catch (Throwable t) {
+                        Log.e("xtunnel", "diag error", t);
+                    }
+                }
+            }
+        }, "xtunnel-diag").start();
+    }
+
+    private void writeStatusFile(String status) {
+        try {
+            java.io.File f = new java.io.File(getFilesDir(), "xtunnel_status.log");
+            java.io.FileWriter w = new java.io.FileWriter(f, false);
+            w.write(status);
+            w.close();
+        } catch (Throwable t) { }
     }
 
     private void runWithTimeout(Runnable task, long timeoutMs, String name) {

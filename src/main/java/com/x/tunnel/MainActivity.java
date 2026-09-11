@@ -100,6 +100,19 @@ public class MainActivity extends AppCompatActivity {
         buttonNewProfile.setOnClickListener(v -> openProfileEditor(null));
         buttonEditCurrent.setOnClickListener(v -> openProfileEditor(prefs.getCurrentProfileId()));
         buttonControl.setOnClickListener(v -> toggleConnection());
+        buttonControl.setOnLongClickListener(v -> {
+            try {
+                String status = com.x.tunnel.tunnel.Tunnel.GetTunnelStatus();
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("隧道诊断")
+                        .setMessage(status)
+                        .setPositiveButton(android.R.string.ok, null)
+                        .show();
+            } catch (Throwable t) {
+                Toast.makeText(MainActivity.this, "诊断暂不可用: " + t.getMessage(), Toast.LENGTH_SHORT).show();
+            }
+            return true;
+        });
 
         updateUi();
 

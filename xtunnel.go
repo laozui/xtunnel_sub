@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,6 +72,107 @@ var (
 	ipStrategy byte
 )
 
+// ======================== 运行诊断（供 Android 层显示/上报） ========================
+
+var (
+	diagMu        sync.Mutex
+	lastTunnelErr string
+	diagLog       []string
+	diagLogMax    = 300
+)
+
+type diagWriter struct{}
+
+func (diagWriter) Write(p []byte) (int, error) {
+	diagMu.Lock()
+	line := strings.TrimRight(string(p), "\r\n")
+	if line != "" {
+		diagLog = append(diagLog, line)
+		if len(diagLog) > diagLogMax {
+			diagLog = diagLog[len(diagLog)-diagLogMax:]
+		}
+	}
+	diagMu.Unlock()
+	return os.Stderr.Write(p)
+}
+
+func init() {
+	log.SetOutput(diagWriter{})
+	log.SetFlags(log.Ltime)
+}
+
+func setTunnelErr(msg string) {
+	diagMu.Lock()
+	lastTunnelErr = msg
+	diagMu.Unlock()
+}
+
+// GetTunnelStatus 返回隧道实时状态 + 最近日志，便于在 App 界面直接定位故障。
+func GetTunnelStatus() string {
+	var sb strings.Builder
+
+	serviceMu.Lock()
+	p := echPool
+	serviceMu.Unlock()
+
+	ready, total := 0, 0
+	rttInfo := ""
+	if p != nil {
+		p.wsConnsMu.RLock()
+		total = len(p.smuxConns)
+		parts := make([]string, 0, len(p.smuxConns))
+		for i, sess := range p.smuxConns {
+			if sess != nil && !sess.IsClosed() {
+				ready++
+				r := atomic.LoadInt64(&p.channelRTT[i])
+				if r > 0 {
+					parts = append(parts, fmt.Sprintf("%d:%dms", i+1, r/1e6))
+				}
+			}
+		}
+		p.wsConnsMu.RUnlock()
+		rttInfo = strings.Join(parts, " ")
+	}
+
+	diagMu.Lock()
+	le := lastTunnelErr
+	logs := append([]string(nil), diagLog...)
+	diagMu.Unlock()
+
+	sb.WriteString(fmt.Sprintf("通道就绪: %d/%d", ready, total))
+	if rttInfo != "" {
+		sb.WriteString("   [" + rttInfo + "]")
+	}
+	sb.WriteString("\n最后错误: ")
+	if le == "" {
+		sb.WriteString("(无)")
+	} else {
+		sb.WriteString(le)
+	}
+	sb.WriteString("\n--- 最近日志 ---\n")
+	start := 0
+	if len(logs) > 60 {
+		start = len(logs) - 60
+	}
+	for _, l := range logs[start:] {
+		sb.WriteString(l)
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// GetRecentLogs 仅返回最近日志文本。
+func GetRecentLogs() string {
+	diagMu.Lock()
+	defer diagMu.Unlock()
+	start := 0
+	if len(diagLog) > 200 {
+		start = len(diagLog) - 200
+	}
+	return strings.Join(diagLog[start:], "\n")
+}
+
+
 const (
 	IPStrategyDefault  byte = 0
 	IPStrategyIPv4Only byte = 1
@@ -81,18 +183,26 @@ const (
 
 func StartSocksProxy(host, wsServer string, n int, udpBlockPortsStr string, dns, ech, ip string, tkn string, fb bool, ipsPref string, insecureFlag bool) error {
 	if wsServer == "" {
+		setTunnelErr("缺少 wss 服务地址（节点未配置服务地址）")
 		return fmt.Errorf("缺少 wss 服务地址")
 	}
 	if host == "" {
+		setTunnelErr("缺少本地监听地址")
 		return fmt.Errorf("缺少本地监听地址")
 	}
 	u, err := url.Parse(wsServer)
 	if err != nil {
+		setTunnelErr(fmt.Sprintf("无效的服务地址: %v", err))
 		return fmt.Errorf("无效的服务地址: %w", err)
 	}
 	scheme := strings.ToLower(u.Scheme)
 	if scheme != "wss" && scheme != "ws" {
+		setTunnelErr(fmt.Sprintf("仅支持 ws:// 或 wss:// 协议（当前: %s，地址: %s）", scheme, wsServer))
 		return fmt.Errorf("仅支持 ws:// 或 wss:// 协议")
+	}
+	if u.Hostname() == "" {
+		setTunnelErr(fmt.Sprintf("服务地址缺少主机名: %q", wsServer))
+		return fmt.Errorf("服务地址缺少主机名: %q", wsServer)
 	}
 
 	serviceMu.Lock()
@@ -149,8 +259,18 @@ func StartSocksProxy(host, wsServer string, n int, udpBlockPortsStr string, dns,
 	}
 
 	if scheme == "wss" && !fallback {
-		if err := prepareECH(); err != nil {
-			return fmt.Errorf("获取 ECH 公钥失败: %w", err)
+		// prepareECH 内部为无限重试，这里加超时保护，避免 SOCKS5 监听被永久阻塞。
+		echDone := make(chan error, 1)
+		go func() { echDone <- prepareECH() }()
+		select {
+		case err := <-echDone:
+			if err != nil {
+				setTunnelErr(fmt.Sprintf("获取 ECH 公钥失败: %v", err))
+				return fmt.Errorf("获取 ECH 公钥失败: %w", err)
+			}
+		case <-time.After(15 * time.Second):
+			log.Printf("[客户端] ECH 公钥获取超时(15s)，先行启动（后台继续重试）")
+			setTunnelErr("ECH 公钥获取超时(15s)，该节点可能不支持 ECH，建议开启『禁用ECH』")
 		}
 	}
 
@@ -162,6 +282,7 @@ func StartSocksProxy(host, wsServer string, n int, udpBlockPortsStr string, dns,
 	if err != nil {
 		echPool.Close()
 		echPool = nil
+		setTunnelErr(fmt.Sprintf("SOCKS5 监听失败: %v", err))
 		return fmt.Errorf("SOCKS5 监听失败: %w", err)
 	}
 	proxyListener = l
@@ -711,6 +832,7 @@ func (p *ECHPool) dialAndServe(idx int, ip string) {
 		wsConn, err := dialWebSocketWithECH(p.wsServerAddr, 3, ip, p.clientID, chID)
 		if err != nil {
 			log.Printf("[客户端] 通道 %d (IP:%s) 连接失败: %v", chID, ipLabel, err)
+			setTunnelErr(fmt.Sprintf("通道 %d (IP:%s) 连接失败: %v", chID, ipLabel, err))
 			select {
 			case <-p.ctx.Done():
 				return

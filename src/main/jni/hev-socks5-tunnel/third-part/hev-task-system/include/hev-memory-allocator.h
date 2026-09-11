@@ -117,4 +117,18 @@ void *hev_memory_allocator_realloc (HevMemoryAllocator *self, void *ptr,
  */
 void hev_memory_allocator_free (HevMemoryAllocator *self, void *ptr);
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void *hev_malloc (size_t size);
+void *hev_malloc0 (size_t size);
+void *hev_calloc (size_t nmemb, size_t size);
+void *hev_realloc (void *ptr, size_t size);
+void hev_free (void *ptr);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* __HEV_MEMORY_ALLOCATOR_H__ */

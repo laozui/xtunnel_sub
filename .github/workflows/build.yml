@@ -45,7 +45,7 @@ jobs:
           export PATH=$PATH:$(go env GOPATH)/bin
           gomobile init
           mkdir -p libs
-          gomobile bind -target=android/arm,android/arm64 -javapkg=com.x.tunnel -o libs/tunnel.aar .
+          gomobile bind -target=android/arm,android/arm64 -androidapi 24 -javapkg=com.x.tunnel -o libs/tunnel.aar .
           ls -lh libs/
 
       - name: Build APK with Gradle

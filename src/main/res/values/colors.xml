@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#FFFFFFFF</color>
+    <color name="xt_background">#FFF5F7FB</color>
+    <color name="xt_surface">#FFFFFFFF</color>
+    <color name="xt_border">#FFD8DEE9</color>
+    <color name="xt_text_primary">#FF10243E</color>
+    <color name="xt_text_secondary">#FF5F6F86</color>
+    <color name="xt_accent">#FF1B75E5</color>
+    <color name="xt_success">#FF138A52</color>
+    <color name="xt_danger">#FFC44848</color>
+    <color name="xt_badge_background">#FFE7F1FF</color>
+</resources>

@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+        <string name="app_name">X-Tunnel</string>
+        <string name="socks_port">本地代理端口：</string>
+        <string name="ipv4">IPv4</string>
+        <string name="ipv6">IPv6</string>
+        <string name="global">全局代理</string>
+        <string name="apps">分应用代理</string>
+        <string name="save">保存</string>
+        <string name="control_enable">启动</string>
+        <string name="control_disable">停止</string>
+        <string name="wss_addr">服务器地址（域名:端口）：</string>
+        <string name="udp_block_ports">UDP 禁用端口（多端口逗号分隔）：</string>
+        <string name="ech_dns">DNS服务器（DoH 或 传统 DNS）：</string>
+        <string name="ech_domain">ECH 公钥查询域名：</string>
+        <string name="pref_ip">优选 IP（多IP逗号分隔）：</string>
+        <string name="token">身份令牌：</string>
+        <string name="ws_conn">WSS 连接数：</string>
+        <string name="disable_ech">禁用 ECH</string>
+        <string name="ips_pref">IP 偏好：</string>
+        <string name="insecure">忽略证书校验</string>
+
+        <string-array name="ips_pref_entries">
+                <item>默认</item>
+                <item>IPv4优先</item>
+                <item>IPv6优先</item>
+                <item>仅IPv4</item>
+                <item>仅IPv6</item>
+        </string-array>
+
+        <!-- Profile Management -->
+        <string name="profile_label">配置节点：</string>
+        <string name="btn_add">添加</string>
+        <string name="btn_copy">复制</string>
+        <string name="btn_rename">重命名</string>
+        <string name="btn_delete">删除</string>
+        <string name="default_profile_name">默认节点</string>
+        <string name="dialog_title_add">添加节点</string>
+        <string name="dialog_title_rename">重命名节点</string>
+        <string name="dialog_title_delete">确认删除？</string>
+        <string name="dialog_hint_name">节点名称</string>
+        <string name="toast_profile_exists">节点名称已存在</string>
+        <string name="toast_name_empty">节点名称不能为空</string>
+        <string name="toast_saved">保存成功</string>
+        <string name="toast_cannot_delete_last">不能删除最后一个节点</string>
+        <string name="ok">确定</string>
+        <string name="cancel">取消</string>
+        <string name="status_label">连接状态</string>
+        <string name="status_connected">已连接</string>
+        <string name="status_disconnected">未连接</string>
+        <string name="mode_label">代理模式</string>
+        <string name="mode_global_summary">当前为全局代理</string>
+        <string name="mode_app_summary">当前为分应用代理</string>
+        <string name="action_new_profile">新建节点</string>
+        <string name="action_edit_current">编辑当前节点</string>
+        <string name="action_edit">编辑</string>
+        <string name="profile_list_title">节点列表</string>
+        <string name="profile_more_actions">更多节点操作</string>
+        <string name="current_profile_badge">当前</string>
+        <string name="profile_empty_server">未配置服务器地址</string>
+        <string name="profile_summary_template">%1$s · %2$s · %3$s</string>
+        <string name="profile_summary_ws_conn">连接数 %1$d</string>
+        <string name="profile_summary_insecure">忽略证书</string>
+        <string name="profile_summary_secure">证书校验开启</string>
+        <string name="profile_count">%1$d 个节点</string>
+        <string name="edit_profile_title">编辑节点</string>
+        <string name="new_profile_title">新建节点</string>
+        <string name="profile_group_basic">基本信息</string>
+        <string name="profile_group_network">网络设置</string>
+        <string name="profile_group_advanced">高级设置</string>
+        <string name="wss_addr_hint">例如：example.com:443</string>
+        <string name="token_hint">留空则不使用</string>
+        <string name="pref_ip_hint">多 IP 用逗号分隔</string>
+        <string name="udp_block_ports_hint">留空则不禁用端口</string>
+        <string name="ech_dns_hint">例如：https://doh.pub/dns-query</string>
+        <string name="ech_domain_hint">例如：cloudflare-ech.com</string>
+        <string name="ws_conn_hint">建议 2-10</string>
+        <string name="search_apps_hint">搜索应用</string>
+        <string name="selected_apps_count">已选择 %1$d 个应用</string>
+        <string name="toast_profile_running_locked">运行中不可修改节点</string>
+        <string name="toast_select_profile_saved">已切换当前节点</string>
+        <string name="toast_profile_deleted">节点已删除</string>
+        <string name="toast_profile_updated">节点已更新</string>
+        <string name="toast_profile_created">节点已创建</string>
+        <string name="toast_server_required">服务器地址不能为空</string>
+        <string name="menu_edit">编辑</string>
+        <string name="menu_copy">复制</string>
+        <string name="menu_rename">重命名</string>
+        <string name="menu_delete">删除</string>
+
+        <!-- Subscription -->
+        <string name="sub_card_title">订阅管理</string>
+        <string name="sub_url_hint">输入订阅地址（http/https）</string>
+        <string name="sub_sync_now">同步订阅</string>
+        <string name="sub_syncing">正在同步…</string>
+        <string name="sub_last_sync">上次同步：%1$s</string>
+        <string name="sub_never_synced">上次同步：从未同步</string>
+        <string name="sub_sync_interval_label">同步策略：</string>
+        <string name="sub_tag">订阅</string>
+
+        <string-array name="sub_sync_interval_entries">
+                <item>手动同步</item>
+                <item>每次启动 App</item>
+                <item>每 6 小时</item>
+                <item>每天一次</item>
+        </string-array>
+</resources>

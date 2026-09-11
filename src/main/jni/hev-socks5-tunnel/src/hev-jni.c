@@ -23,7 +23,7 @@
 
 /* clang-format off */
 #ifndef PKGNAME
-#define PKGNAME hev/htproxy
+#define PKGNAME com/x/tunnel
 #endif
 #ifndef CLSNAME
 #define CLSNAME TProxyService

@@ -26,6 +26,10 @@ public class SubscriptionManager {
         public String server; // WssAddr
         public String token;  // Token
         public String ip;     // PrefIp
+        public boolean fallback = true; // fallback=1 对应 disableEch (停用ECH走标准TLS)
+        public boolean insecure = false; // insecure=1 对应跳过证书验证
+        public int connections = 3;
+        public String block = "443";
     }
 
     public interface Callback {
@@ -162,6 +166,25 @@ public class SubscriptionManager {
                     node.token = kv.getOrDefault("token", "");
                     node.ip = kv.getOrDefault("ip", "");
 
+                    String fbStr = kv.get("fallback");
+                    if (fbStr != null) {
+                        node.fallback = "1".equals(fbStr.trim()) || "true".equalsIgnoreCase(fbStr.trim());
+                    }
+                    String insStr = kv.get("insecure");
+                    if (insStr != null) {
+                        node.insecure = "1".equals(insStr.trim()) || "true".equalsIgnoreCase(insStr.trim());
+                    }
+                    String connStr = kv.get("connections");
+                    if (connStr != null) {
+                        try {
+                            node.connections = Integer.parseInt(connStr.trim());
+                        } catch (Exception ignored) {}
+                    }
+                    String blockStr = kv.get("block");
+                    if (blockStr != null && !blockStr.trim().isEmpty()) {
+                        node.block = blockStr.trim();
+                    }
+
                     String name = kv.get("name");
                     if (name == null || name.isEmpty()) {
                         name = "节点 " + index;
@@ -206,13 +229,14 @@ public class SubscriptionManager {
             prefs.setToken(newId, node.token);
             prefs.setPrefIp(newId, node.ip);
 
-            // 默认其它属性沿用合理缺省值
-            prefs.setWsConn(newId, 3);
-            prefs.setUdpBlockPorts(newId, "443");
+            // 属性根据订阅配置自动注入
+            prefs.setWsConn(newId, prefs.clampWsConn(node.connections));
+            prefs.setUdpBlockPorts(newId, node.block);
             prefs.setEchDns(newId, "https://doh.pub/dns-query");
             prefs.setEchDomain(newId, "cloudflare-ech.com");
-            prefs.setDisableEch(newId, false);
-            prefs.setInsecure(newId, false);
+            // fallback=1 对应停用 ECH (走标准 TLS)，避免 Cloudflare Tunnel 节点因 ECH 握手失败
+            prefs.setDisableEch(newId, node.fallback);
+            prefs.setInsecure(newId, node.insecure);
 
             if (currentServerBefore != null && !currentServerBefore.isEmpty() && currentServerBefore.equals(node.server)) {
                 matchedCurrentId = newId;

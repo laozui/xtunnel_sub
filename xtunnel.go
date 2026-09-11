@@ -99,6 +99,20 @@ func (diagWriter) Write(p []byte) (int, error) {
 func init() {
 	log.SetOutput(diagWriter{})
 	log.SetFlags(log.Ltime)
+	go diagFileFlusher()
+}
+
+// diagStatusPath 是 App 私有目录下的诊断状态文件，由 Go 侧定时刷新。
+// Java 侧直接读取该文件展示给用户，无需依赖 gomobile 对 GetTunnelStatus 生成的
+// Java 方法(实测 gomobile 未为部分导出函数生成 Java 绑定，会导致编译失败)。
+const diagStatusPath = "/data/data/com.x.tunnel/files/xtunnel_status.log"
+
+// diagFileFlusher 每 5 秒把隧道实时状态写入诊断文件，供 App 界面/长按诊断读取。
+func diagFileFlusher() {
+	for {
+		time.Sleep(5 * time.Second)
+		_ = os.WriteFile(diagStatusPath, []byte(GetTunnelStatus()), 0600)
+	}
 }
 
 func setTunnelErr(msg string) {

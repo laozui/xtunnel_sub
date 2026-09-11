@@ -102,7 +102,17 @@ public class MainActivity extends AppCompatActivity {
         buttonControl.setOnClickListener(v -> toggleConnection());
         buttonControl.setOnLongClickListener(v -> {
             try {
-                String status = com.x.tunnel.tunnel.Tunnel.GetTunnelStatus();
+                // 读取 Go 侧写入的诊断文件(不依赖 gomobile 方法绑定)
+                java.io.File f = new java.io.File(getFilesDir(), "xtunnel_status.log");
+                String status = "(暂无诊断数据，请先开启连接等待数秒)";
+                if (f.exists()) {
+                    java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(f));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = r.readLine()) != null) { sb.append(line).append("\n"); }
+                    r.close();
+                    if (sb.length() > 0) status = sb.toString();
+                }
                 new AlertDialog.Builder(MainActivity.this)
                         .setTitle("隧道诊断")
                         .setMessage(status)

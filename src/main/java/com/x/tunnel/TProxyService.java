@@ -217,7 +217,7 @@ public class TProxyService extends VpnService {
                                             Toast.makeText(appContext, "启动成功", Toast.LENGTH_SHORT).show();
                                         }
                                     });
-                                    Log.i("xtunnel", "===== 启动成功 =====\n" + Tunnel.GetTunnelStatus());
+                                    Log.i("xtunnel", "===== 启动成功 =====");
                                 } else {
                                     new Handler(Looper.getMainLooper()).post(new Runnable() {
                                         @Override
@@ -225,7 +225,7 @@ public class TProxyService extends VpnService {
                                             Toast.makeText(appContext, "服务器连接失败", Toast.LENGTH_SHORT).show();
                                         }
                                     });
-                                    Log.e("xtunnel", "===== 服务器连接失败 =====\n" + Tunnel.GetTunnelStatus());
+                                    Log.e("xtunnel", "===== 服务器连接失败 =====");
                                 }
                             }
                         }, "xtunnel-ws-wait").start();
@@ -260,9 +260,16 @@ public class TProxyService extends VpnService {
                 while (!Thread.currentThread().isInterrupted()) {
                     try { Thread.sleep(5000); } catch (InterruptedException e) { break; }
                     try {
-                        String status = Tunnel.GetTunnelStatus();
-                        Log.i("xtunnel", "===== TUNNEL STATUS =====\n" + status);
-                        writeStatusFile(status);
+                        // 直接读取 Go 侧写入的诊断文件(不依赖 gomobile 方法绑定)
+                        java.io.File f = new java.io.File(getFilesDir(), "xtunnel_status.log");
+                        if (f.exists()) {
+                            java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(f));
+                            StringBuilder sb = new StringBuilder();
+                            String line;
+                            while ((line = r.readLine()) != null) { sb.append(line).append("\n"); }
+                            r.close();
+                            Log.i("xtunnel", "===== TUNNEL STATUS =====\n" + sb.toString());
+                        }
                     } catch (Throwable t) {
                         Log.e("xtunnel", "diag error", t);
                     }

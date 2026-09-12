@@ -467,7 +467,7 @@ public class Preferences
 
         // ================= 订阅相关配置 =================
         public String getSubUrl() {
-                return prefs.getString(SUB_URL, "");
+                return prefs.getString(SUB_URL, "https://cc.meetmeag.com/xt.txt");
         }
 
         public void setSubUrl(String url) {

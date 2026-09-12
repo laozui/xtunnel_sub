@@ -505,4 +505,30 @@ public class Preferences
                 editor.putBoolean(PROFILE_IS_SUB_PREFIX + profileId, isSub);
                 editor.commit();
         }
+
+        public int clearAllSubProfiles() {
+                Set<String> allIds = new HashSet<>(getProfileIds());
+                int count = 0;
+                for (String id : allIds) {
+                        if (isSubProfile(id)) {
+                                removeProfile(id);
+                                count++;
+                        }
+                }
+                if (getProfileIds().isEmpty()) {
+                        addProfile("default", "默认节点");
+                        setCurrentProfileId("default");
+                } else if (!getProfileIds().contains(getCurrentProfileId())) {
+                        setCurrentProfileId(getProfileIds().iterator().next());
+                }
+                return count;
+        }
+
+        public int getSubProfileCount() {
+                int count = 0;
+                for (String id : getProfileIds()) {
+                        if (isSubProfile(id)) count++;
+                }
+                return count;
+        }
 }

@@ -10,4 +10,8 @@
     <color name="xt_success">#FF138A52</color>
     <color name="xt_danger">#FFC44848</color>
     <color name="xt_badge_background">#FFE7F1FF</color>
+    <color name="xt_running_card_bg">#FFF0FDF4</color>
+    <color name="xt_running_badge_bg">#FFDCFCE7</color>
+    <color name="xt_running_text">#FF15803D</color>
+    <color name="xt_selected_card_bg">#FFF0F7FF</color>
 </resources>

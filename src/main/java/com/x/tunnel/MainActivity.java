@@ -73,9 +73,6 @@ public class MainActivity extends AppCompatActivity {
     private MaterialButton buttonClearSubNodes;
     private boolean isSyncing = false;
 
-    // 切换节点防重入
-    private boolean isSwitching = false;
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -495,45 +492,21 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * 核心改进：无论是否在运行中，点击别的节点均可无缝切换！
-     * - 若当前是停用状态：切换后仍保持停用；
-     * - 若当前在运行中：先停用当前，切换至新节点，延时自动拉起新节点运行！
+     * 选择/切换配置
+     * - 稳健原则：运行中禁止盲切，提示用户先停用当前服务，避免跨进程端口冲突与僵死
+     * - 停用状态下：点击即时切换，更新当前节点并刷新高亮
      */
     private void selectProfile(ProfileItem item) {
-        if (isSwitching) {
-            return;
-        }
-
-        if (item.id.equals(prefs.getCurrentProfileId())) {
-            if (prefs.getEnable()) {
+        if (prefs.getEnable()) {
+            if (item.id.equals(prefs.getCurrentProfileId())) {
                 Toast.makeText(this, R.string.toast_already_running, Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, R.string.toast_profile_running_locked, Toast.LENGTH_SHORT).show();
             }
             return;
         }
 
-        if (prefs.getEnable()) {
-            // 当前处于运行中：自动切换重连
-            isSwitching = true;
-            Toast.makeText(this, getString(R.string.toast_switching_profile, item.name), Toast.LENGTH_SHORT).show();
-
-            // 1. 发送停用指令
-            startService(new Intent(this, TProxyService.class).setAction(TProxyService.ACTION_DISCONNECT));
-
-            // 2. 立即更新当前选中节点并刷新界面高亮
-            prefs.setCurrentProfileId(item.id);
-            updateUi();
-
-            // 3. 延时 450ms 让后台独立 :vpn 进程完全释放端口与网卡描述符，再启动新节点
-            new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                if (!isFinishing() && !isDestroyed()) {
-                    prefs.setEnable(true);
-                    updateUi();
-                    startService(new Intent(this, TProxyService.class).setAction(TProxyService.ACTION_CONNECT));
-                    isSwitching = false;
-                }
-            }, 450);
-        } else {
-            // 当前是停用状态：直接切换，保持停用
+        if (!item.id.equals(prefs.getCurrentProfileId())) {
             prefs.setCurrentProfileId(item.id);
             updateUi();
             Toast.makeText(this, getString(R.string.toast_select_profile_saved) + ": " + item.name, Toast.LENGTH_SHORT).show();

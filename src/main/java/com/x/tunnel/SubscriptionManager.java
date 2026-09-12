@@ -245,7 +245,8 @@ public class SubscriptionManager {
 
         // 4. 处理当前选中的节点ID
         Set<String> currentIds = prefs.getProfileIds();
-        if (!currentIds.contains(currentId)) {
+        boolean currentValid = currentIds.contains(currentId) && !prefs.getWssAddr(currentId).trim().isEmpty();
+        if (!currentValid) {
             if (matchedCurrentId != null) {
                 prefs.setCurrentProfileId(matchedCurrentId);
             } else if (firstAddedId != null) {

@@ -493,22 +493,48 @@ public class MainActivity extends AppCompatActivity {
 
     /**
      * 选择/切换配置
-     * - 稳健原则：运行中禁止盲切，提示用户先停用当前服务，避免跨进程端口冲突与僵死
-     * - 停用状态下：点击即时切换，更新当前节点并刷新高亮
+     * - 稳健且顺滑原则（Hot Switch）：
+     *   1) 停用状态下：即时切换当前节点并刷新界面高亮；
+     *   2) 运行状态下：点击其他节点即时触发无缝热切换（Hot Switch），
+     *      无需手动停用再启用，系统 VPN 隧道保持连通，后台平滑重连至新节点内核！
      */
     private void selectProfile(ProfileItem item) {
-        if (prefs.getEnable()) {
-            if (item.id.equals(prefs.getCurrentProfileId())) {
+        if (item.id.equals(prefs.getCurrentProfileId())) {
+            if (prefs.getEnable()) {
                 Toast.makeText(this, R.string.toast_already_running, Toast.LENGTH_SHORT).show();
-            } else {
-                Toast.makeText(this, R.string.toast_profile_running_locked, Toast.LENGTH_SHORT).show();
             }
             return;
         }
 
-        if (!item.id.equals(prefs.getCurrentProfileId())) {
-            prefs.setCurrentProfileId(item.id);
-            updateUi();
+        if (prefs.getWssAddr(item.id).trim().isEmpty()) {
+            Toast.makeText(this, R.string.toast_server_required, Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // 立即更新当前选中节点并刷新界面高亮
+        prefs.setCurrentProfileId(item.id);
+        updateUi();
+
+        if (prefs.getEnable()) {
+            // 运行状态下：发送 ACTION_SWITCH 执行无缝热切换
+            Toast.makeText(this, getString(R.string.toast_switching_profile, item.name), Toast.LENGTH_SHORT).show();
+            Intent intent = new Intent(this, TProxyService.class);
+            intent.setAction(TProxyService.ACTION_SWITCH);
+            intent.putExtra(TProxyService.EXTRA_PROFILE_ID, item.id);
+            intent.putExtra(TProxyService.EXTRA_PROFILE_NAME, item.name);
+            intent.putExtra(TProxyService.EXTRA_WSS_ADDR, prefs.getWssAddr(item.id));
+            intent.putExtra(TProxyService.EXTRA_WS_CONN, prefs.clampWsConn(prefs.getWsConn(item.id)));
+            intent.putExtra(TProxyService.EXTRA_UDP_BLOCK_PORTS, prefs.getUdpBlockPorts(item.id));
+            intent.putExtra(TProxyService.EXTRA_ECH_DNS, prefs.getEchDns(item.id));
+            intent.putExtra(TProxyService.EXTRA_ECH_DOMAIN, prefs.getEchDomain(item.id));
+            intent.putExtra(TProxyService.EXTRA_PREF_IP, prefs.getPrefIp(item.id));
+            intent.putExtra(TProxyService.EXTRA_TOKEN, prefs.getToken(item.id));
+            intent.putExtra(TProxyService.EXTRA_DISABLE_ECH, prefs.getDisableEch(item.id));
+            intent.putExtra(TProxyService.EXTRA_IPS_PREF, prefs.getIpsPref(item.id));
+            intent.putExtra(TProxyService.EXTRA_INSECURE, prefs.getInsecure(item.id));
+            startService(intent);
+        } else {
+            // 停用状态下：普通切换
             Toast.makeText(this, getString(R.string.toast_select_profile_saved) + ": " + item.name, Toast.LENGTH_SHORT).show();
         }
     }

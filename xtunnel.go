@@ -359,14 +359,13 @@ func StopSocksProxy() {
 	p := echPool
 	proxyListener = nil
 	echPool = nil
-	serviceMu.Unlock()
-
 	if l != nil {
 		_ = l.Close()
 	}
 	if p != nil {
 		p.Close()
 	}
+	serviceMu.Unlock()
 }
 
 func parseIPStrategy(s string) byte {

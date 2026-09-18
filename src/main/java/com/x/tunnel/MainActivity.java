@@ -60,6 +60,8 @@ public class MainActivity extends AppCompatActivity {
     private MaterialButton buttonNewProfile;
     private MaterialButton buttonEditCurrent;
     private MaterialButton buttonControl;
+    private MaterialButton buttonTestAll;
+    private boolean isTestingAll = false;
     private TextInputEditText inputSearchProfile;
     private String currentSearchQuery = "";
 
@@ -96,6 +98,8 @@ public class MainActivity extends AppCompatActivity {
         buttonNewProfile = findViewById(R.id.button_new_profile);
         buttonEditCurrent = findViewById(R.id.button_edit_current);
         buttonControl = findViewById(R.id.button_control);
+        buttonTestAll = findViewById(R.id.button_test_all);
+        buttonTestAll.setOnClickListener(v -> testAllProfiles());
         inputSearchProfile = findViewById(R.id.input_search_profile);
 
         // 绑定订阅页控件
@@ -265,6 +269,9 @@ public class MainActivity extends AppCompatActivity {
         buttonEditCurrent.setEnabled(editable);
         buttonSyncSub.setEnabled(editable && !isSyncing);
         buttonClearSubNodes.setEnabled(editable);
+        if (buttonTestAll != null) {
+            buttonTestAll.setEnabled(!isTestingAll);
+        }
     }
 
     private void setupSubscriptionUi() {
@@ -463,7 +470,7 @@ public class MainActivity extends AppCompatActivity {
         Set<String> ids = prefs.getProfileIds();
         List<ProfileItem> items = new ArrayList<>();
         for (String id : ids) {
-            items.add(new ProfileItem(id, prefs.getProfileName(id), buildProfileSummary(id), prefs.isSubProfile(id)));
+            items.add(new ProfileItem(id, prefs.getProfileName(id), buildProfileSummary(id), prefs.isSubProfile(id), prefs.getProfileLatency(id)));
         }
         Collections.sort(items, Comparator.comparing(item -> item.name.toLowerCase()));
         return items;
@@ -540,16 +547,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showProfileMenu(View anchor, ProfileItem item) {
-        if (prefs.getEnable()) {
-            Toast.makeText(this, R.string.toast_profile_running_locked, Toast.LENGTH_SHORT).show();
-            return;
-        }
-
         PopupMenu menu = new PopupMenu(this, anchor);
-        menu.getMenu().add(0, 1, 0, R.string.menu_edit);
-        menu.getMenu().add(0, 2, 1, R.string.menu_copy);
-        menu.getMenu().add(0, 3, 2, R.string.menu_rename);
-        menu.getMenu().add(0, 4, 3, R.string.menu_delete);
+        if (!prefs.getEnable()) {
+            menu.getMenu().add(0, 1, 0, R.string.menu_edit);
+            menu.getMenu().add(0, 2, 1, R.string.menu_copy);
+            menu.getMenu().add(0, 3, 2, R.string.menu_rename);
+            menu.getMenu().add(0, 4, 3, R.string.menu_delete);
+        }
+        menu.getMenu().add(0, 5, 4, R.string.action_test_single);
         menu.setOnMenuItemClickListener(menuItem -> handleProfileMenu(item, menuItem));
         menu.show();
     }
@@ -568,6 +573,93 @@ public class MainActivity extends AppCompatActivity {
             case 4:
                 deleteProfile(item.id);
                 return true;
+            case 5:
+                testSingleProfile(item.id);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * 一键测试全部节点可用性与延迟（并发探测）
+     */
+    private void testAllProfiles() {
+        if (isTestingAll) {
+            return;
+        }
+        List<ProfileItem> items = getSortedProfileItems();
+        if (items.isEmpty()) {
+            Toast.makeText(this, "暂无节点可测试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        isTestingAll = true;
+        buttonTestAll.setEnabled(false);
+        buttonTestAll.setText(R.string.action_testing);
+        Toast.makeText(this, R.string.toast_testing_started, Toast.LENGTH_SHORT).show();
+
+        List<String> ids = new ArrayList<>();
+        for (ProfileItem item : items) {
+            ids.add(item.id);
+            prefs.setProfileLatency(item.id, ServerTester.LATENCY_TESTING);
+        }
+        updateProfileList();
+
+        boolean testCurrentTunnel = prefs.getEnable();
+        ServerTester.testAllProfiles(prefs, ids, testCurrentTunnel, new ServerTester.TestCallback() {
+            @Override
+            public void onProgress(String profileId, int latencyMs) {
+                prefs.setProfileLatency(profileId, latencyMs);
+                updateProfileList();
+            }
+
+            @Override
+            public void onComplete(int totalCount, int availableCount, int failCount, int currentConnLatency) {
+                isTestingAll = false;
+                if (buttonTestAll != null) {
+                    buttonTestAll.setEnabled(true);
+                    buttonTestAll.setText(R.string.action_test_all);
+                }
+                updateProfileList();
+
+                if (currentConnLatency > 0) {
+                    Toast.makeText(MainActivity.this,
+                            getString(R.string.test_all_done_with_current, availableCount, failCount, currentConnLatency),
+                            Toast.LENGTH_LONG).show();
+                } else {
+                    Toast.makeText(MainActivity.this,
+                            getString(R.string.test_all_done, availableCount, failCount),
+                            Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
+    }
+
+    /**
+     * 测试单个节点的连通性与延迟
+     */
+    private void testSingleProfile(String profileId) {
+        prefs.setProfileLatency(profileId, ServerTester.LATENCY_TESTING);
+        updateProfileList();
+        new Thread(() -> {
+            String wssAddr = prefs.getWssAddr(profileId);
+            String token = prefs.getToken(profileId);
+            String prefIp = prefs.getPrefIp(profileId);
+            boolean insecure = prefs.getInsecure(profileId);
+            int latency = ServerTester.testProfile(wssAddr, token, prefIp, insecure);
+            runOnUiThread(() -> {
+                prefs.setProfileLatency(profileId, latency);
+                updateProfileList();
+                String name = prefs.getProfileName(profileId);
+                if (latency > 0) {
+                    Toast.makeText(MainActivity.this, "[" + name + "] 可用 (" + latency + " ms)", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(MainActivity.this, "[" + name + "] 超时或不可用", Toast.LENGTH_SHORT).show();
+                }
+            });
+        }).start();
+    }
             default:
                 return false;
         }
@@ -665,12 +757,14 @@ public class MainActivity extends AppCompatActivity {
         final String name;
         final String summary;
         final boolean isSub;
+        final int latency;
 
-        ProfileItem(String id, String name, String summary, boolean isSub) {
+        ProfileItem(String id, String name, String summary, boolean isSub, int latency) {
             this.id = id;
             this.name = name;
             this.summary = summary;
             this.isSub = isSub;
+            this.latency = latency;
         }
     }
 
@@ -703,6 +797,34 @@ public class MainActivity extends AppCompatActivity {
             holder.name.setText(item.name);
             holder.summary.setText(item.summary);
             holder.subBadge.setVisibility(item.isSub ? View.VISIBLE : View.GONE);
+
+            // 连通性 / 延迟徽章显示
+            if (item.latency == 0) {
+                holder.latencyBadge.setVisibility(View.GONE);
+            } else if (item.latency == ServerTester.LATENCY_TESTING) {
+                holder.latencyBadge.setText(R.string.latency_testing);
+                holder.latencyBadge.setBackgroundResource(R.drawable.latency_testing_badge);
+                holder.latencyBadge.setTextColor(getColor(R.color.xt_latency_testing_text));
+                holder.latencyBadge.setVisibility(View.VISIBLE);
+            } else if (item.latency == ServerTester.LATENCY_TIMEOUT) {
+                holder.latencyBadge.setText(R.string.latency_timeout);
+                holder.latencyBadge.setBackgroundResource(R.drawable.latency_bad_badge);
+                holder.latencyBadge.setTextColor(getColor(R.color.xt_latency_bad_text));
+                holder.latencyBadge.setVisibility(View.VISIBLE);
+            } else {
+                holder.latencyBadge.setText(item.latency + " ms");
+                if (item.latency < 200) {
+                    holder.latencyBadge.setBackgroundResource(R.drawable.latency_good_badge);
+                    holder.latencyBadge.setTextColor(getColor(R.color.xt_latency_good_text));
+                } else if (item.latency < 400) {
+                    holder.latencyBadge.setBackgroundResource(R.drawable.latency_medium_badge);
+                    holder.latencyBadge.setTextColor(getColor(R.color.xt_latency_medium_text));
+                } else {
+                    holder.latencyBadge.setBackgroundResource(R.drawable.latency_bad_badge);
+                    holder.latencyBadge.setTextColor(getColor(R.color.xt_latency_bad_text));
+                }
+                holder.latencyBadge.setVisibility(View.VISIBLE);
+            }
 
             // 强视觉高亮与徽章
             if (running) {
@@ -755,6 +877,7 @@ public class MainActivity extends AppCompatActivity {
         final TextView summary;
         final TextView badge;
         final TextView subBadge;
+        final TextView latencyBadge;
         final MaterialButton editButton;
         final View moreButton;
 
@@ -766,6 +889,7 @@ public class MainActivity extends AppCompatActivity {
             summary = itemView.findViewById(R.id.text_profile_summary);
             badge = itemView.findViewById(R.id.text_profile_badge);
             subBadge = itemView.findViewById(R.id.text_profile_sub_badge);
+            latencyBadge = itemView.findViewById(R.id.text_profile_latency);
             editButton = itemView.findViewById(R.id.button_profile_edit);
             moreButton = itemView.findViewById(R.id.button_profile_more);
         }

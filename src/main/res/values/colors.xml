@@ -14,4 +14,12 @@
     <color name="xt_running_badge_bg">#FFDCFCE7</color>
     <color name="xt_running_text">#FF15803D</color>
     <color name="xt_selected_card_bg">#FFF0F7FF</color>
+    <color name="xt_latency_good_bg">#FFDCFCE7</color>
+    <color name="xt_latency_good_text">#FF15803D</color>
+    <color name="xt_latency_medium_bg">#FFFEF3C7</color>
+    <color name="xt_latency_medium_text">#FFB45309</color>
+    <color name="xt_latency_bad_bg">#FFFEE2E2</color>
+    <color name="xt_latency_bad_text">#FFB91C1C</color>
+    <color name="xt_latency_testing_bg">#FFF1F5F9</color>
+    <color name="xt_latency_testing_text">#FF64748B</color>
 </resources>

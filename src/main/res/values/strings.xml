@@ -94,6 +94,14 @@
         <string name="search_profiles_hint">搜索节点名称或地址</string>
         <string name="status_running_badge">● 运行中</string>
         <string name="status_selected_badge">已选择</string>
+        <string name="action_test_all">一键测通</string>
+        <string name="action_testing">测速中…</string>
+        <string name="action_test_single">测试连通性</string>
+        <string name="latency_timeout">超时</string>
+        <string name="latency_testing">测速中</string>
+        <string name="test_all_done">测试完成：%1$d 可用 / %2$d 超时</string>
+        <string name="test_all_done_with_current">测试完成：%1$d 可用 / %2$d 超时（当前连接可用：%3$d ms）</string>
+        <string name="toast_testing_started">正在并发测试节点连通性…</string>
         <string name="sub_paste_btn">粘贴</string>
         <string name="sub_clear_btn">清空所有订阅节点</string>
         <string name="sub_clear_confirm_title">清空订阅节点</string>

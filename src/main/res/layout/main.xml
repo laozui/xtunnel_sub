@@ -212,10 +212,28 @@
                     android:id="@+id/text_profile_count"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="10dp"
+                    android:layout_marginStart="8dp"
                     android:textColor="@color/xt_text_secondary"
                     android:textSize="12sp"
                     android:textStyle="bold" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/button_test_all"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="38dp"
+                    android:layout_marginStart="8dp"
+                    android:paddingStart="10dp"
+                    android:paddingTop="0dp"
+                    android:paddingEnd="10dp"
+                    android:paddingBottom="0dp"
+                    android:minWidth="0dp"
+                    android:text="@string/action_test_all"
+                    android:textColor="@color/xt_accent"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    app:strokeColor="@color/xt_accent"
+                    app:strokeWidth="1dp" />
             </LinearLayout>
 
             <!-- 独立原生的 RecyclerView：适配任何尺寸平板/手机，彻底解决平板无法下拉问题！ -->

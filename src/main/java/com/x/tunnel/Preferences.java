@@ -51,6 +51,7 @@ public class Preferences
         public static final String SUB_SYNC_INTERVAL = "SubSyncInterval";
         public static final String SUB_LAST_SYNC_TIME = "SubLastSyncTime";
         public static final String PROFILE_IS_SUB_PREFIX = "ProfileIsSub_";
+        public static final String PROFILE_LATENCY_PREFIX = "ProfileLatency_";
 
         private SharedPreferences prefs;
         private String currentProfileId;
@@ -151,6 +152,7 @@ public class Preferences
                 editor.remove(k + "_" + id);
             }
             editor.remove(PROFILE_IS_SUB_PREFIX + id);
+            editor.remove(PROFILE_LATENCY_PREFIX + id);
             editor.commit();
         }
 
@@ -530,5 +532,15 @@ public class Preferences
                         if (isSubProfile(id)) count++;
                 }
                 return count;
+        }
+
+        public int getProfileLatency(String profileId) {
+                return prefs.getInt(PROFILE_LATENCY_PREFIX + profileId, 0);
+        }
+
+        public void setProfileLatency(String profileId, int latency) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putInt(PROFILE_LATENCY_PREFIX + profileId, latency);
+                editor.apply();
         }
 }

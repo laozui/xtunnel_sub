@@ -74,6 +74,21 @@
                     android:textColor="@color/xt_text_secondary"
                     android:textSize="10sp"
                     android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/text_profile_latency"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:background="@drawable/latency_good_badge"
+                    android:paddingStart="7dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="7dp"
+                    android:paddingBottom="3dp"
+                    android:textColor="@color/xt_latency_good_text"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
             </LinearLayout>
 
             <TextView

@@ -660,10 +660,6 @@ public class MainActivity extends AppCompatActivity {
             });
         }).start();
     }
-            default:
-                return false;
-        }
-    }
 
     private void copyProfile(String sourceId) {
         EditText input = new EditText(this);

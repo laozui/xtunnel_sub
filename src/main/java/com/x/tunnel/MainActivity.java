@@ -81,6 +81,22 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        final Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            try {
+                java.io.File f = new java.io.File(getFilesDir(), "crash.log");
+                java.io.FileWriter w = new java.io.FileWriter(f, false);
+                java.io.PrintWriter pw = new java.io.PrintWriter(w);
+                e.printStackTrace(pw);
+                pw.flush();
+                pw.close();
+            } catch (Throwable ignored) {}
+            if (defaultHandler != null) {
+                defaultHandler.uncaughtException(t, e);
+            }
+        });
+
         setContentView(R.layout.main);
 
         prefs = new Preferences(this);
@@ -210,6 +226,20 @@ public class MainActivity extends AppCompatActivity {
                     r.close();
                     if (sb.length() > 0) status = sb.toString();
                 }
+
+                // 检查是否有崩溃日志
+                java.io.File crashF = new java.io.File(getFilesDir(), "crash.log");
+                if (crashF.exists()) {
+                    java.io.BufferedReader cr = new java.io.BufferedReader(new java.io.FileReader(crashF));
+                    StringBuilder csb = new StringBuilder();
+                    String cline;
+                    while ((cline = cr.readLine()) != null) { csb.append(cline).append("\n"); }
+                    cr.close();
+                    if (csb.length() > 0) {
+                        status = "===== 最近崩溃记录 =====\n" + csb.toString() + "\n=====================\n" + status;
+                    }
+                }
+
                 new AlertDialog.Builder(MainActivity.this)
                         .setTitle("隧道诊断")
                         .setMessage(status)

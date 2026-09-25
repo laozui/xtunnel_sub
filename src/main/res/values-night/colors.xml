@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色模式主题配色体系 -->
+    <color name="ic_launcher_background">#FFFA5400</color>
+    <color name="xt_background">#FF0F1318</color>
+    <color name="xt_surface">#FF1A202C</color>
+    <color name="xt_border">#FF2D3748</color>
+    <color name="xt_text_primary">#FFF1F5F9</color>
+    <color name="xt_text_secondary">#FF94A3B8</color>
+    <color name="xt_accent">#FF3B82F6</color>
+    <color name="xt_success">#FF10B981</color>
+    <color name="xt_danger">#FFEF4444</color>
+    <color name="xt_badge_background">#FF1E293B</color>
+
+    <!-- 运行中状态卡片与徽章 (深翡翠绿微底色) -->
+    <color name="xt_running_card_bg">#FF0E2A20</color>
+    <color name="xt_running_badge_bg">#FF064E3B</color>
+    <color name="xt_running_text">#FF34D399</color>
+
+    <!-- 已选中状态卡片 (深科技蓝微底色) -->
+    <color name="xt_selected_card_bg">#FF132338</color>
+
+    <!-- 延迟测速徽章 -->
+    <color name="xt_latency_good_bg">#FF064E3B</color>
+    <color name="xt_latency_good_text">#FF34D399</color>
+    <color name="xt_latency_medium_bg">#FF451A03</color>
+    <color name="xt_latency_medium_text">#FFFBBF24</color>
+    <color name="xt_latency_bad_bg">#FF450A0A</color>
+    <color name="xt_latency_bad_text">#FFF87171</color>
+    <color name="xt_latency_testing_bg">#FF1E293B</color>
+    <color name="xt_latency_testing_text">#FF94A3B8</color>
+</resources>

@@ -48,6 +48,7 @@ public class Preferences
         public static final String PROFILE_NAME_PREFIX = "ProfileName_";
 
         public static final String SUB_URL = "SubUrl";
+        public static final String PROFILE_ORDER = "ProfileOrder";
         public static final String SUB_SYNC_INTERVAL = "SubSyncInterval";
         public static final String SUB_LAST_SYNC_TIME = "SubLastSyncTime";
         public static final String PROFILE_IS_SUB_PREFIX = "ProfileIsSub_";
@@ -154,6 +155,11 @@ public class Preferences
             editor.remove(PROFILE_IS_SUB_PREFIX + id);
             editor.remove(PROFILE_LATENCY_PREFIX + id);
             editor.commit();
+
+            java.util.List<String> order = getProfileOrder();
+            if (order.remove(id)) {
+                setProfileOrder(order);
+            }
         }
 
         public void copyProfile(String fromId, String toId) {
@@ -523,7 +529,40 @@ public class Preferences
                 } else if (!getProfileIds().contains(getCurrentProfileId())) {
                         setCurrentProfileId(getProfileIds().iterator().next());
                 }
+
+                java.util.List<String> order = getProfileOrder();
+                order.retainAll(getProfileIds());
+                setProfileOrder(order);
+
                 return count;
+        }
+
+        public java.util.List<String> getProfileOrder() {
+                String json = prefs.getString(PROFILE_ORDER, null);
+                java.util.List<String> order = new java.util.ArrayList<>();
+                if (json != null && !json.trim().isEmpty()) {
+                        try {
+                                org.json.JSONArray arr = new org.json.JSONArray(json);
+                                for (int i = 0; i < arr.length(); i++) {
+                                        order.add(arr.getString(i));
+                                }
+                        } catch (Exception ignored) {}
+                }
+                return order;
+        }
+
+        public void setProfileOrder(java.util.List<String> order) {
+                org.json.JSONArray arr = new org.json.JSONArray();
+                if (order != null) {
+                        for (String id : order) {
+                                if (id != null && !id.trim().isEmpty()) {
+                                        arr.put(id);
+                                }
+                        }
+                }
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putString(PROFILE_ORDER, arr.toString());
+                editor.apply();
         }
 
         public int getSubProfileCount() {

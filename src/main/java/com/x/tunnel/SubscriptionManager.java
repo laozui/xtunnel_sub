@@ -32,8 +32,24 @@ public class SubscriptionManager {
         public String block = "443";
     }
 
+    public static class ApplyResult {
+        public final int count;
+        public final boolean currentProfileChanged;
+        public final String previousProfileId;
+        public final String currentProfileId;
+        public final String currentProfileName;
+
+        public ApplyResult(int count, boolean currentProfileChanged, String previousProfileId, String currentProfileId, String currentProfileName) {
+            this.count = count;
+            this.currentProfileChanged = currentProfileChanged;
+            this.previousProfileId = previousProfileId;
+            this.currentProfileId = currentProfileId;
+            this.currentProfileName = currentProfileName;
+        }
+    }
+
     public interface Callback {
-        void onSuccess(int count);
+        void onSuccess(ApplyResult result);
         void onError(String message);
     }
 
@@ -60,11 +76,11 @@ public class SubscriptionManager {
                     return;
                 }
 
-                applySubNodes(prefs, nodes);
+                ApplyResult result = applySubNodes(prefs, nodes);
                 prefs.setSubLastSyncTime(System.currentTimeMillis());
 
                 if (callback != null) {
-                    callback.onSuccess(nodes.size());
+                    callback.onSuccess(result);
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Sync subscription failed", e);
@@ -200,60 +216,113 @@ public class SubscriptionManager {
         return list;
     }
 
-    private static synchronized void applySubNodes(Preferences prefs, List<SubNode> newNodes) {
+    private static synchronized ApplyResult applySubNodes(Preferences prefs, List<SubNode> newNodes) {
         // 1. 获取所有旧的 profile
         Set<String> oldIds = prefs.getProfileIds();
-        String currentId = prefs.getCurrentProfileId();
-        String currentServerBefore = prefs.getWssAddr(currentId);
+        String currentIdBefore = prefs.getCurrentProfileId();
 
-        // 2. 清理旧的订阅节点（保留用户手动创建的节点）
+        // 建立旧订阅节点的映射：server -> oldId
+        Map<String, String> oldSubServerToId = new LinkedHashMap<>();
         for (String id : oldIds) {
             if (prefs.isSubProfile(id)) {
+                String server = prefs.getWssAddr(id).trim();
+                if (!server.isEmpty() && !oldSubServerToId.containsKey(server)) {
+                    oldSubServerToId.put(server, id);
+                }
+            }
+        }
+
+        // 2. 依次映射或生成新节点的 ID，保持已有节点的 ID 稳定
+        Set<String> retainedOrNewSubIds = new java.util.LinkedHashSet<>();
+        List<String> newlyAddedSubIds = new ArrayList<>();
+        String firstSubId = null;
+
+        for (SubNode node : newNodes) {
+            String server = node.server.trim();
+            String id = oldSubServerToId.get(server);
+            if (id == null) {
+                id = "sub_" + UUID.randomUUID().toString().substring(0, 8);
+                newlyAddedSubIds.add(id);
+            }
+            retainedOrNewSubIds.add(id);
+            if (firstSubId == null) {
+                firstSubId = id;
+            }
+
+            // 更新或添加该 profile 配置
+            prefs.addProfile(id, node.name);
+            prefs.setProfileIsSub(id, true);
+            prefs.setWssAddr(id, node.server);
+            prefs.setToken(id, node.token);
+            prefs.setPrefIp(id, node.ip);
+
+            // 属性根据订阅配置自动注入
+            prefs.setWsConn(id, prefs.clampWsConn(node.connections));
+            prefs.setUdpBlockPorts(id, node.block);
+            prefs.setEchDns(id, "https://doh.pub/dns-query");
+            prefs.setEchDomain(id, "cloudflare-ech.com");
+            // fallback=1 对应停用 ECH (走标准 TLS)，避免 Cloudflare Tunnel 节点因 ECH 握手失败
+            prefs.setDisableEch(id, node.fallback);
+            prefs.setInsecure(id, node.insecure);
+        }
+
+        // 3. 清理本次订阅中已不存在的旧订阅节点
+        for (String id : oldIds) {
+            if (prefs.isSubProfile(id) && !retainedOrNewSubIds.contains(id)) {
                 prefs.removeProfile(id);
             }
         }
 
-        // 3. 添加新的订阅节点
-        String firstAddedId = null;
-        String matchedCurrentId = null;
+        // 4. 维护持久化的自定义排序列表 (ProfileOrder)
+        // 规则：保留现有排序中仍存在的节点；新加入的节点追加到排序尾部；已删除的节点自动剔除
+        List<String> oldOrder = prefs.getProfileOrder();
+        List<String> newOrder = new ArrayList<>();
+        Set<String> allValidIds = prefs.getProfileIds();
 
-        for (SubNode node : newNodes) {
-            String newId = "sub_" + UUID.randomUUID().toString().substring(0, 8);
-            if (firstAddedId == null) {
-                firstAddedId = newId;
-            }
-            prefs.addProfile(newId, node.name);
-            prefs.setProfileIsSub(newId, true);
-
-            prefs.setWssAddr(newId, node.server);
-            prefs.setToken(newId, node.token);
-            prefs.setPrefIp(newId, node.ip);
-
-            // 属性根据订阅配置自动注入
-            prefs.setWsConn(newId, prefs.clampWsConn(node.connections));
-            prefs.setUdpBlockPorts(newId, node.block);
-            prefs.setEchDns(newId, "https://doh.pub/dns-query");
-            prefs.setEchDomain(newId, "cloudflare-ech.com");
-            // fallback=1 对应停用 ECH (走标准 TLS)，避免 Cloudflare Tunnel 节点因 ECH 握手失败
-            prefs.setDisableEch(newId, node.fallback);
-            prefs.setInsecure(newId, node.insecure);
-
-            if (currentServerBefore != null && !currentServerBefore.isEmpty() && currentServerBefore.equals(node.server)) {
-                matchedCurrentId = newId;
+        // 4.1 遍历原有的排序：只要还在 allValidIds 中，就保留用户自定义的位置
+        for (String id : oldOrder) {
+            if (allValidIds.contains(id) && !newOrder.contains(id)) {
+                newOrder.add(id);
             }
         }
-
-        // 4. 处理当前选中的节点ID
-        Set<String> currentIds = prefs.getProfileIds();
-        boolean currentValid = currentIds.contains(currentId) && !prefs.getWssAddr(currentId).trim().isEmpty();
-        if (!currentValid) {
-            if (matchedCurrentId != null) {
-                prefs.setCurrentProfileId(matchedCurrentId);
-            } else if (firstAddedId != null) {
-                prefs.setCurrentProfileId(firstAddedId);
-            } else if (!currentIds.isEmpty()) {
-                prefs.setCurrentProfileId(currentIds.iterator().next());
+        // 4.2 对于没有在 newOrder 中的节点（新订阅添加的节点），按订阅原序追加到末尾
+        for (String id : retainedOrNewSubIds) {
+            if (!newOrder.contains(id)) {
+                newOrder.add(id);
             }
         }
+        // 4.3 兜底添加任何可能遗漏的节点
+        for (String id : allValidIds) {
+            if (!newOrder.contains(id)) {
+                newOrder.add(id);
+            }
+        }
+        prefs.setProfileOrder(newOrder);
+
+        // 5. 处理当前选中的节点 ID
+        // 需求：若当前的这个节点还在，默认更新之后继续使用当前节点。若当前节点更新后不存在了，用订阅的第一个节点。
+        String newCurrentId = currentIdBefore;
+        boolean changed = false;
+
+        boolean currentStillExists = allValidIds.contains(currentIdBefore) && !prefs.getWssAddr(currentIdBefore).trim().isEmpty();
+        if (currentStillExists) {
+            // 当前节点依然存在且有效，继续使用当前节点
+            newCurrentId = currentIdBefore;
+            changed = false;
+        } else {
+            // 当前节点更新后不存在了，自动切换到订阅的第一个节点
+            if (firstSubId != null) {
+                newCurrentId = firstSubId;
+            } else if (!newOrder.isEmpty()) {
+                newCurrentId = newOrder.get(0);
+            } else if (!allValidIds.isEmpty()) {
+                newCurrentId = allValidIds.iterator().next();
+            }
+            changed = true;
+            prefs.setCurrentProfileId(newCurrentId);
+        }
+
+        String currentProfileName = prefs.getProfileName(newCurrentId);
+        return new ApplyResult(newNodes.size(), changed, currentIdBefore, newCurrentId, currentProfileName);
     }
 }

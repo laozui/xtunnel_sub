@@ -10,6 +10,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
 import android.text.TextWatcher;
+import android.view.HapticFeedbackConstants;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.ArrayAdapter;
@@ -22,6 +23,7 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.recyclerview.widget.ItemTouchHelper;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -120,6 +122,62 @@ public class MainActivity extends AppCompatActivity {
         recyclerProfiles.setLayoutManager(new LinearLayoutManager(this));
         adapter = new ProfileAdapter();
         recyclerProfiles.setAdapter(adapter);
+
+        // 节点长按拖拽排序与持久化
+        ItemTouchHelper itemTouchHelper = new ItemTouchHelper(new ItemTouchHelper.SimpleCallback(ItemTouchHelper.UP | ItemTouchHelper.DOWN, 0) {
+            private int dragFrom = -1;
+            private int dragTo = -1;
+
+            @Override
+            public boolean isLongPressDragEnabled() {
+                // 如果当前处于搜索过滤状态，禁用长按拖拽，避免局部过滤破坏全局排序
+                return currentSearchQuery == null || currentSearchQuery.isEmpty();
+            }
+
+            @Override
+            public boolean onMove(@NonNull RecyclerView recyclerView, @NonNull RecyclerView.ViewHolder viewHolder, @NonNull RecyclerView.ViewHolder target) {
+                int fromPos = viewHolder.getAdapterPosition();
+                int toPos = target.getAdapterPosition();
+                if (fromPos < 0 || toPos < 0 || fromPos == toPos) {
+                    return false;
+                }
+                if (dragFrom == -1) {
+                    dragFrom = fromPos;
+                }
+                dragTo = toPos;
+                adapter.onItemMove(fromPos, toPos);
+                return true;
+            }
+
+            @Override
+            public void onSwiped(@NonNull RecyclerView.ViewHolder viewHolder, int direction) {
+                // 不启用滑动删除，防误触
+            }
+
+            @Override
+            public void onSelectedChanged(RecyclerView.ViewHolder viewHolder, int actionState) {
+                super.onSelectedChanged(viewHolder, actionState);
+                if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
+                    viewHolder.itemView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                    viewHolder.itemView.animate().scaleX(1.02f).scaleY(1.02f).setDuration(150).start();
+                }
+            }
+
+            @Override
+            public void clearView(@NonNull RecyclerView recyclerView, @NonNull RecyclerView.ViewHolder viewHolder) {
+                super.clearView(recyclerView, viewHolder);
+                viewHolder.itemView.animate().scaleX(1.0f).scaleY(1.0f).setDuration(150).start();
+
+                // 拖拽完成松手，持久化新的自定义节点排序
+                if (dragFrom != -1 && dragTo != -1 && dragFrom != dragTo) {
+                    List<String> newOrder = adapter.getProfileIdsOrder();
+                    prefs.setProfileOrder(newOrder);
+                }
+                dragFrom = -1;
+                dragTo = -1;
+            }
+        });
+        itemTouchHelper.attachToRecyclerView(recyclerProfiles);
 
         switchGlobal.setOnCheckedChangeListener((buttonView, isChecked) -> {
             if (!buttonView.isPressed()) {
@@ -267,7 +325,7 @@ public class MainActivity extends AppCompatActivity {
         boolean editable = !prefs.getEnable();
         buttonNewProfile.setEnabled(editable);
         buttonEditCurrent.setEnabled(editable);
-        buttonSyncSub.setEnabled(editable && !isSyncing);
+        buttonSyncSub.setEnabled(!isSyncing);
         buttonClearSubNodes.setEnabled(editable);
         if (buttonTestAll != null) {
             buttonTestAll.setEnabled(!isTestingAll);
@@ -377,7 +435,7 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        if (needSync && !prefs.getEnable()) {
+        if (needSync) {
             syncSubscription(true);
         }
     }
@@ -391,24 +449,34 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        if (prefs.getEnable()) {
-            Toast.makeText(this, R.string.toast_profile_running_locked, Toast.LENGTH_SHORT).show();
-            return;
-        }
-
         isSyncing = true;
         buttonSyncSub.setEnabled(false);
         buttonSyncSub.setText(R.string.sub_syncing);
 
         SubscriptionManager.fetchAndUpdate(prefs, url, new SubscriptionManager.Callback() {
             @Override
-            public void onSuccess(int count) {
+            public void onSuccess(SubscriptionManager.ApplyResult result) {
                 runOnUiThread(() -> {
                     isSyncing = false;
-                    buttonSyncSub.setEnabled(!prefs.getEnable());
+                    buttonSyncSub.setEnabled(true);
                     buttonSyncSub.setText(R.string.sub_sync_now);
                     updateUi();
-                    Toast.makeText(MainActivity.this, "订阅同步成功，已更新 " + count + " 个节点", Toast.LENGTH_SHORT).show();
+
+                    if (prefs.getEnable()) {
+                        // 运行状态下：发送 ACTION_SWITCH 无缝热重连，使最新节点或参数即时生效
+                        sendSwitchIntent(result.currentProfileId, result.currentProfileName);
+                        if (result.currentProfileChanged) {
+                            Toast.makeText(MainActivity.this, "订阅已更新，原节点已失效，已平滑切换至: " + result.currentProfileName, Toast.LENGTH_LONG).show();
+                        } else {
+                            Toast.makeText(MainActivity.this, "订阅已更新（共 " + result.count + " 个节点），继续使用: " + result.currentProfileName, Toast.LENGTH_SHORT).show();
+                        }
+                    } else {
+                        if (result.currentProfileChanged) {
+                            Toast.makeText(MainActivity.this, "订阅已更新，已切换至第1个节点: " + result.currentProfileName, Toast.LENGTH_SHORT).show();
+                        } else {
+                            Toast.makeText(MainActivity.this, "订阅同步成功，已更新 " + result.count + " 个节点", Toast.LENGTH_SHORT).show();
+                        }
+                    }
                 });
             }
 
@@ -416,7 +484,7 @@ public class MainActivity extends AppCompatActivity {
             public void onError(String message) {
                 runOnUiThread(() -> {
                     isSyncing = false;
-                    buttonSyncSub.setEnabled(!prefs.getEnable());
+                    buttonSyncSub.setEnabled(true);
                     buttonSyncSub.setText(R.string.sub_sync_now);
                     if (!silent) {
                         Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
@@ -467,12 +535,31 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private List<ProfileItem> getSortedProfileItems() {
-        Set<String> ids = prefs.getProfileIds();
+        Set<String> allIds = prefs.getProfileIds();
+        List<String> savedOrder = prefs.getProfileOrder();
+        List<String> finalOrder = new ArrayList<>();
+
+        // 1. 先保留 savedOrder 中仍存在于 allIds 的节点自定义顺序
+        for (String id : savedOrder) {
+            if (allIds.contains(id) && !finalOrder.contains(id)) {
+                finalOrder.add(id);
+            }
+        }
+        // 2. 将未包含在 savedOrder 中的新节点追加到末尾
+        for (String id : allIds) {
+            if (!finalOrder.contains(id)) {
+                finalOrder.add(id);
+            }
+        }
+        // 3. 同步回写最新的完整排序
+        if (finalOrder.size() != savedOrder.size() || !finalOrder.equals(savedOrder)) {
+            prefs.setProfileOrder(finalOrder);
+        }
+
         List<ProfileItem> items = new ArrayList<>();
-        for (String id : ids) {
+        for (String id : finalOrder) {
             items.add(new ProfileItem(id, prefs.getProfileName(id), buildProfileSummary(id), prefs.isSubProfile(id), prefs.getProfileLatency(id)));
         }
-        Collections.sort(items, Comparator.comparing(item -> item.name.toLowerCase()));
         return items;
     }
 
@@ -496,6 +583,24 @@ public class MainActivity extends AppCompatActivity {
             intent.putExtra(ProfileEditActivity.EXTRA_PROFILE_ID, profileId);
         }
         startActivity(intent);
+    }
+
+    private void sendSwitchIntent(String profileId, String profileName) {
+        Intent intent = new Intent(this, TProxyService.class);
+        intent.setAction(TProxyService.ACTION_SWITCH);
+        intent.putExtra(TProxyService.EXTRA_PROFILE_ID, profileId);
+        intent.putExtra(TProxyService.EXTRA_PROFILE_NAME, profileName);
+        intent.putExtra(TProxyService.EXTRA_WSS_ADDR, prefs.getWssAddr(profileId));
+        intent.putExtra(TProxyService.EXTRA_WS_CONN, prefs.clampWsConn(prefs.getWsConn(profileId)));
+        intent.putExtra(TProxyService.EXTRA_UDP_BLOCK_PORTS, prefs.getUdpBlockPorts(profileId));
+        intent.putExtra(TProxyService.EXTRA_ECH_DNS, prefs.getEchDns(profileId));
+        intent.putExtra(TProxyService.EXTRA_ECH_DOMAIN, prefs.getEchDomain(profileId));
+        intent.putExtra(TProxyService.EXTRA_PREF_IP, prefs.getPrefIp(profileId));
+        intent.putExtra(TProxyService.EXTRA_TOKEN, prefs.getToken(profileId));
+        intent.putExtra(TProxyService.EXTRA_DISABLE_ECH, prefs.getDisableEch(profileId));
+        intent.putExtra(TProxyService.EXTRA_IPS_PREF, prefs.getIpsPref(profileId));
+        intent.putExtra(TProxyService.EXTRA_INSECURE, prefs.getInsecure(profileId));
+        startService(intent);
     }
 
     /**
@@ -525,21 +630,7 @@ public class MainActivity extends AppCompatActivity {
         if (prefs.getEnable()) {
             // 运行状态下：发送 ACTION_SWITCH 执行无缝热切换
             Toast.makeText(this, getString(R.string.toast_switching_profile, item.name), Toast.LENGTH_SHORT).show();
-            Intent intent = new Intent(this, TProxyService.class);
-            intent.setAction(TProxyService.ACTION_SWITCH);
-            intent.putExtra(TProxyService.EXTRA_PROFILE_ID, item.id);
-            intent.putExtra(TProxyService.EXTRA_PROFILE_NAME, item.name);
-            intent.putExtra(TProxyService.EXTRA_WSS_ADDR, prefs.getWssAddr(item.id));
-            intent.putExtra(TProxyService.EXTRA_WS_CONN, prefs.clampWsConn(prefs.getWsConn(item.id)));
-            intent.putExtra(TProxyService.EXTRA_UDP_BLOCK_PORTS, prefs.getUdpBlockPorts(item.id));
-            intent.putExtra(TProxyService.EXTRA_ECH_DNS, prefs.getEchDns(item.id));
-            intent.putExtra(TProxyService.EXTRA_ECH_DOMAIN, prefs.getEchDomain(item.id));
-            intent.putExtra(TProxyService.EXTRA_PREF_IP, prefs.getPrefIp(item.id));
-            intent.putExtra(TProxyService.EXTRA_TOKEN, prefs.getToken(item.id));
-            intent.putExtra(TProxyService.EXTRA_DISABLE_ECH, prefs.getDisableEch(item.id));
-            intent.putExtra(TProxyService.EXTRA_IPS_PREF, prefs.getIpsPref(item.id));
-            intent.putExtra(TProxyService.EXTRA_INSECURE, prefs.getInsecure(item.id));
-            startService(intent);
+            sendSwitchIntent(item.id, item.name);
         } else {
             // 停用状态下：普通切换
             Toast.makeText(this, getString(R.string.toast_select_profile_saved) + ": " + item.name, Toast.LENGTH_SHORT).show();
@@ -775,6 +866,30 @@ public class MainActivity extends AppCompatActivity {
             currentProfileId = selectedId;
             isRunning = running;
             notifyDataSetChanged();
+        }
+
+        void onItemMove(int fromPosition, int toPosition) {
+            if (fromPosition < 0 || toPosition < 0 || fromPosition >= items.size() || toPosition >= items.size()) {
+                return;
+            }
+            if (fromPosition < toPosition) {
+                for (int i = fromPosition; i < toPosition; i++) {
+                    Collections.swap(items, i, i + 1);
+                }
+            } else {
+                for (int i = fromPosition; i > toPosition; i--) {
+                    Collections.swap(items, i, i - 1);
+                }
+            }
+            notifyItemMoved(fromPosition, toPosition);
+        }
+
+        List<String> getProfileIdsOrder() {
+            List<String> ids = new ArrayList<>();
+            for (ProfileItem item : items) {
+                ids.add(item.id);
+            }
+            return ids;
         }
 
         @NonNull

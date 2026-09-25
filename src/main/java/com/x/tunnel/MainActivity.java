@@ -23,6 +23,7 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.ItemTouchHelper;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -501,7 +502,7 @@ public class MainActivity extends AppCompatActivity {
     private void updateStatusUi() {
         boolean enabled = prefs.getEnable();
         textStatusValue.setText(enabled ? R.string.status_connected : R.string.status_disconnected);
-        textStatusValue.setTextColor(getColor(enabled ? R.color.xt_success : R.color.xt_text_primary));
+        textStatusValue.setTextColor(ContextCompat.getColor(this, enabled ? R.color.xt_success : R.color.xt_text_primary));
         textActiveProfile.setText(getString(R.string.profile_label) + " " + prefs.getProfileName(prefs.getCurrentProfileId()));
         buttonControl.setText(enabled ? R.string.control_disable : R.string.control_enable);
     }
@@ -915,24 +916,24 @@ public class MainActivity extends AppCompatActivity {
             } else if (item.latency == ServerTester.LATENCY_TESTING) {
                 holder.latencyBadge.setText(R.string.latency_testing);
                 holder.latencyBadge.setBackgroundResource(R.drawable.latency_testing_badge);
-                holder.latencyBadge.setTextColor(getColor(R.color.xt_latency_testing_text));
+                holder.latencyBadge.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.xt_latency_testing_text));
                 holder.latencyBadge.setVisibility(View.VISIBLE);
             } else if (item.latency == ServerTester.LATENCY_TIMEOUT) {
                 holder.latencyBadge.setText(R.string.latency_timeout);
                 holder.latencyBadge.setBackgroundResource(R.drawable.latency_bad_badge);
-                holder.latencyBadge.setTextColor(getColor(R.color.xt_latency_bad_text));
+                holder.latencyBadge.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.xt_latency_bad_text));
                 holder.latencyBadge.setVisibility(View.VISIBLE);
             } else {
                 holder.latencyBadge.setText(item.latency + " ms");
                 if (item.latency < 200) {
                     holder.latencyBadge.setBackgroundResource(R.drawable.latency_good_badge);
-                    holder.latencyBadge.setTextColor(getColor(R.color.xt_latency_good_text));
+                    holder.latencyBadge.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.xt_latency_good_text));
                 } else if (item.latency < 400) {
                     holder.latencyBadge.setBackgroundResource(R.drawable.latency_medium_badge);
-                    holder.latencyBadge.setTextColor(getColor(R.color.xt_latency_medium_text));
+                    holder.latencyBadge.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.xt_latency_medium_text));
                 } else {
                     holder.latencyBadge.setBackgroundResource(R.drawable.latency_bad_badge);
-                    holder.latencyBadge.setTextColor(getColor(R.color.xt_latency_bad_text));
+                    holder.latencyBadge.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.xt_latency_bad_text));
                 }
                 holder.latencyBadge.setVisibility(View.VISIBLE);
             }
@@ -940,26 +941,26 @@ public class MainActivity extends AppCompatActivity {
             // 强视觉高亮与徽章
             if (running) {
                 // 运行中：翡翠绿卡片边框、浅绿雅致微底色、● 运行中绿色徽章
-                holder.card.setCardBackgroundColor(getColor(R.color.xt_running_card_bg));
-                holder.card.setStrokeColor(getColor(R.color.xt_success));
+                holder.card.setCardBackgroundColor(ContextCompat.getColor(MainActivity.this, R.color.xt_running_card_bg));
+                holder.card.setStrokeColor(ContextCompat.getColor(MainActivity.this, R.color.xt_success));
                 holder.card.setStrokeWidth(dpToPx(2));
                 holder.badge.setText(R.string.status_running_badge);
                 holder.badge.setBackgroundResource(R.drawable.profile_running_badge_background);
-                holder.badge.setTextColor(getColor(R.color.xt_running_text));
+                holder.badge.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.xt_running_text));
                 holder.badge.setVisibility(View.VISIBLE);
             } else if (selected) {
                 // 已选中未运行：科技蓝边框、淡蓝微底色、已选择蓝色徽章
-                holder.card.setCardBackgroundColor(getColor(R.color.xt_selected_card_bg));
-                holder.card.setStrokeColor(getColor(R.color.xt_accent));
+                holder.card.setCardBackgroundColor(ContextCompat.getColor(MainActivity.this, R.color.xt_selected_card_bg));
+                holder.card.setStrokeColor(ContextCompat.getColor(MainActivity.this, R.color.xt_accent));
                 holder.card.setStrokeWidth(dpToPx(2));
                 holder.badge.setText(R.string.status_selected_badge);
                 holder.badge.setBackgroundResource(R.drawable.profile_badge_background);
-                holder.badge.setTextColor(getColor(R.color.xt_accent));
+                holder.badge.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.xt_accent));
                 holder.badge.setVisibility(View.VISIBLE);
             } else {
                 // 未选中：标准卡片背景、普通边框、不显示徽章
-                holder.card.setCardBackgroundColor(getColor(R.color.xt_surface));
-                holder.card.setStrokeColor(getColor(R.color.xt_border));
+                holder.card.setCardBackgroundColor(ContextCompat.getColor(MainActivity.this, R.color.xt_surface));
+                holder.card.setStrokeColor(ContextCompat.getColor(MainActivity.this, R.color.xt_border));
                 holder.card.setStrokeWidth(dpToPx(1));
                 holder.badge.setVisibility(View.GONE);
             }

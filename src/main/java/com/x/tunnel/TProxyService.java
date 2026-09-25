@@ -459,7 +459,11 @@ public class TProxyService extends VpnService {
 	private void createNotification(String channelName) {
 		Intent i = new Intent(this, MainActivity.class);
 		i.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-		PendingIntent pi = PendingIntent.getActivity(this, 0, i, PendingIntent.FLAG_IMMUTABLE);
+		int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+			flags |= PendingIntent.FLAG_IMMUTABLE;
+		}
+		PendingIntent pi = PendingIntent.getActivity(this, 0, i, flags);
 		NotificationCompat.Builder notification = new NotificationCompat.Builder(this, channelName);
         Preferences prefs = new Preferences(this);
         String profileName = prefs.getProfileName(prefs.getCurrentProfileId());
@@ -484,7 +488,11 @@ public class TProxyService extends VpnService {
         initNotificationChannel(channelName);
         Intent i = new Intent(this, MainActivity.class);
         i.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        PendingIntent pi = PendingIntent.getActivity(this, 0, i, PendingIntent.FLAG_IMMUTABLE);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            flags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+        PendingIntent pi = PendingIntent.getActivity(this, 0, i, flags);
         NotificationCompat.Builder notification = new NotificationCompat.Builder(this, channelName);
         String content = (profileName != null && !profileName.isEmpty())
                 ? "当前节点: " + profileName

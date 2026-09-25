@@ -8,13 +8,13 @@ android {
 
     defaultConfig {
         applicationId "com.x.tunnel"
-        minSdk 24
+        minSdk 21
         targetSdk 34
-        versionCode 13
-        versionName "2.9.3-sub"
+        versionCode 14
+        versionName "2.9.4-sub"
 
         ndk {
-            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86_64'
+            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
         }
 
         externalNativeBuild {

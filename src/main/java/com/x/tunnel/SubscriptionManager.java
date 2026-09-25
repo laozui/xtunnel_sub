@@ -179,8 +179,10 @@ public class SubscriptionManager {
                 if (server != null && !server.isEmpty()) {
                     SubNode node = new SubNode();
                     node.server = server;
-                    node.token = kv.getOrDefault("token", "");
-                    node.ip = kv.getOrDefault("ip", "");
+                    String tokenVal = kv.get("token");
+                    node.token = tokenVal != null ? tokenVal : "";
+                    String ipVal = kv.get("ip");
+                    node.ip = ipVal != null ? ipVal : "";
 
                     String fbStr = kv.get("fallback");
                     if (fbStr != null) {

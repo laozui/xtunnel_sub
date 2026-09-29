@@ -78,6 +78,16 @@ public class MainActivity extends AppCompatActivity {
     private MaterialButton buttonClearSubNodes;
     private boolean isSyncing = false;
 
+    // 动态优选 IP (小羊算法) 控件
+    private MaterialSwitch switchCfOptEnable;
+    private AutoCompleteTextView dropdownCfOptInterval;
+    private AutoCompleteTextView dropdownCfOptScope;
+    private TextView textCfOptStatus;
+    private TextView textCfOptLastTime;
+    private TextView textCfOptTopIps;
+    private TextView textCfOptSummary;
+    private MaterialButton buttonRunCfOpt;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -130,8 +140,19 @@ public class MainActivity extends AppCompatActivity {
         buttonSyncSub = findViewById(R.id.button_sync_sub);
         buttonClearSubNodes = findViewById(R.id.button_clear_sub_nodes);
 
+        // 绑定动态优选 IP 控件
+        switchCfOptEnable = findViewById(R.id.switch_cf_opt_enable);
+        dropdownCfOptInterval = findViewById(R.id.dropdown_cf_opt_interval);
+        dropdownCfOptScope = findViewById(R.id.dropdown_cf_opt_scope);
+        textCfOptStatus = findViewById(R.id.text_cf_opt_status);
+        textCfOptLastTime = findViewById(R.id.text_cf_opt_last_time);
+        textCfOptTopIps = findViewById(R.id.text_cf_opt_top_ips);
+        textCfOptSummary = findViewById(R.id.text_cf_opt_summary);
+        buttonRunCfOpt = findViewById(R.id.button_run_cf_opt);
+
         setupTabLayout();
         setupSubscriptionUi();
+        setupCfOptimizerUi();
         setupSearchUi();
 
         // 独立原生 RecyclerView 列表配置
@@ -352,6 +373,7 @@ public class MainActivity extends AppCompatActivity {
         updateModeUi();
         updateProfileList();
         updateSubscriptionUi();
+        updateCfOptimizerUi();
 
         boolean editable = !prefs.getEnable();
         buttonNewProfile.setEnabled(editable);
@@ -429,6 +451,130 @@ public class MainActivity extends AppCompatActivity {
         });
 
         checkAutoSync();
+    }
+
+    private void setupCfOptimizerUi() {
+        switchCfOptEnable.setChecked(prefs.getCfOptEnabled());
+        switchCfOptEnable.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            prefs.setCfOptEnabled(isChecked);
+            if (isChecked) {
+                CfOptimizer.startScheduler(MainActivity.this);
+                Toast.makeText(this, "已启用小羊优选，自动后台定期巡检", Toast.LENGTH_SHORT).show();
+            } else {
+                CfOptimizer.stopScheduler();
+                Toast.makeText(this, "已停用小羊优选", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        // 周期选项: 30分钟(30), 1小时(60), 2小时(120), 6小时(360)
+        final String[] intervals = getResources().getStringArray(R.array.cf_opt_interval_entries);
+        final int[] intervalValues = {30, 60, 120, 360};
+        ArrayAdapter<String> intervalAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, intervals);
+        dropdownCfOptInterval.setAdapter(intervalAdapter);
+
+        int currentInterval = prefs.getCfOptInterval();
+        int selectedIndex = 1; // 默认 1 小时 (60)
+        for (int i = 0; i < intervalValues.length; i++) {
+            if (intervalValues[i] == currentInterval) {
+                selectedIndex = i;
+                break;
+            }
+        }
+        dropdownCfOptInterval.setText(intervals[selectedIndex], false);
+        dropdownCfOptInterval.setOnItemClickListener((parent, view, position, id) -> {
+            if (position >= 0 && position < intervalValues.length) {
+                prefs.setCfOptInterval(intervalValues[position]);
+                if (prefs.getCfOptEnabled()) {
+                    CfOptimizer.startScheduler(MainActivity.this);
+                }
+            }
+        });
+
+        // 生效范围选项
+        final String[] scopes = getResources().getStringArray(R.array.cf_opt_scope_entries);
+        ArrayAdapter<String> scopeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, scopes);
+        dropdownCfOptScope.setAdapter(scopeAdapter);
+        int scopeIndex = prefs.getCfOptApplyAll() ? 0 : 1;
+        dropdownCfOptScope.setText(scopes[scopeIndex], false);
+        dropdownCfOptScope.setOnItemClickListener((parent, view, position, id) -> {
+            prefs.setCfOptApplyAll(position == 0);
+        });
+
+        // 手动立即优选按钮
+        buttonRunCfOpt.setOnClickListener(v -> {
+            if (CfOptimizer.isOptimizing()) {
+                Toast.makeText(this, "优选测速正在运行中，请稍候...", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Toast.makeText(this, R.string.toast_cf_opt_started, Toast.LENGTH_SHORT).show();
+            buttonRunCfOpt.setEnabled(false);
+            buttonRunCfOpt.setText(R.string.cf_opt_running);
+            textCfOptStatus.setText(R.string.cf_opt_status_running);
+            textCfOptStatus.setTextColor(ContextCompat.getColor(this, R.color.xt_status_starting));
+            CfOptimizer.startOptimize(MainActivity.this, true);
+        });
+
+        // 注册回调
+        CfOptimizer.setCallback(new CfOptimizer.OptimizerCallback() {
+            @Override
+            public void onStatusChanged(int status, String message) {
+                runOnUiThread(() -> {
+                    if (status == CfOptimizer.STATUS_RUNNING) {
+                        buttonRunCfOpt.setEnabled(false);
+                        buttonRunCfOpt.setText(R.string.cf_opt_running);
+                        textCfOptStatus.setText(R.string.cf_opt_status_running);
+                        textCfOptStatus.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.xt_status_starting));
+                    }
+                });
+            }
+
+            @Override
+            public void onComplete(boolean success, String topIps, String summary) {
+                runOnUiThread(() -> {
+                    buttonRunCfOpt.setEnabled(true);
+                    buttonRunCfOpt.setText(R.string.cf_opt_run_btn);
+                    if (success) {
+                        textCfOptStatus.setText(R.string.cf_opt_status_idle);
+                        textCfOptStatus.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.xt_status_running));
+                        updateCfOptimizerUi();
+                        updateUi();
+                        Toast.makeText(MainActivity.this, R.string.toast_cf_opt_done, Toast.LENGTH_SHORT).show();
+                    } else {
+                        textCfOptStatus.setText("❌ 优选失败");
+                        textCfOptStatus.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.xt_status_stopped));
+                        Toast.makeText(MainActivity.this, "本地优选未测得可用节点，请检查网络", Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+        });
+
+        // 启动后台定时巡检调度器
+        CfOptimizer.startScheduler(this);
+    }
+
+    private void updateCfOptimizerUi() {
+        String lastTime = prefs.getCfOptLastTime();
+        if (lastTime == null || lastTime.isEmpty()) {
+            textCfOptLastTime.setText(R.string.cf_opt_never_run);
+        } else {
+            textCfOptLastTime.setText(getString(R.string.cf_opt_last_time, lastTime));
+        }
+
+        String topIps = prefs.getCfOptTopIps();
+        if (topIps == null || topIps.isEmpty()) {
+            textCfOptTopIps.setText(R.string.cf_opt_top_ips_none);
+        } else {
+            String formattedIps = topIps.replace(",", "\n");
+            textCfOptTopIps.setText(formattedIps);
+        }
+
+        String summary = prefs.getCfOptSummary();
+        if (summary == null || summary.isEmpty()) {
+            textCfOptSummary.setVisibility(View.GONE);
+        } else {
+            textCfOptSummary.setVisibility(View.VISIBLE);
+            textCfOptSummary.setText("⚡ " + summary);
+        }
     }
 
     private void updateSubscriptionUi() {
@@ -1035,5 +1181,11 @@ public class MainActivity extends AppCompatActivity {
             editButton = itemView.findViewById(R.id.button_profile_edit);
             moreButton = itemView.findViewById(R.id.button_profile_more);
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        CfOptimizer.setCallback(null);
     }
 }

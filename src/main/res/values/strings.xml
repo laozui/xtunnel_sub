@@ -130,4 +130,33 @@
                 <item>每 6 小时</item>
                 <item>每天一次</item>
         </string-array>
+
+        <!-- Local Cloudflare Dynamic Optimizer (小羊算法) -->
+        <string name="cf_opt_card_title">本地动态优选 IP (小羊算法)</string>
+        <string name="cf_opt_card_desc">基于当前网络环境实时测速打分，自动获取 Top 5 最优 IP</string>
+        <string name="cf_opt_enable">启用本地动态优选</string>
+        <string name="cf_opt_interval_label">巡检周期：</string>
+        <string name="cf_opt_scope_label">生效范围：</string>
+        <string name="cf_opt_run_btn">⚡ 立即优选一次</string>
+        <string name="cf_opt_running">⚡ 测速打分中…</string>
+        <string name="cf_opt_status_idle">🟢 优选就绪</string>
+        <string name="cf_opt_status_running">⚡ 测速打分中…</string>
+        <string name="cf_opt_last_time">上次优选：%1$s</string>
+        <string name="cf_opt_never_run">上次优选：尚未执行</string>
+        <string name="cf_opt_top_ips_title">当前最优 Top 5 榜单：</string>
+        <string name="cf_opt_top_ips_none">暂无，请点击立即优选</string>
+        <string name="toast_cf_opt_started">已开始在本地网络环境执行动态优选打分…</string>
+        <string name="toast_cf_opt_done">本地优选完成，最优 IP 榜单已生效！</string>
+
+        <string-array name="cf_opt_interval_entries">
+                <item>30 分钟</item>
+                <item>1 小时 (推荐)</item>
+                <item>2 小时</item>
+                <item>6 小时</item>
+        </string-array>
+
+        <string-array name="cf_opt_scope_entries">
+                <item>全部分组所有节点</item>
+                <item>仅应用当前选中节点</item>
+        </string-array>
 </resources>

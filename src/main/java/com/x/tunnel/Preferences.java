@@ -54,6 +54,13 @@ public class Preferences
         public static final String PROFILE_IS_SUB_PREFIX = "ProfileIsSub_";
         public static final String PROFILE_LATENCY_PREFIX = "ProfileLatency_";
 
+        public static final String CF_OPT_ENABLED = "CfOptEnabled";
+        public static final String CF_OPT_INTERVAL = "CfOptInterval";
+        public static final String CF_OPT_APPLY_ALL = "CfOptApplyAll";
+        public static final String CF_OPT_LAST_TIME = "CfOptLastTime";
+        public static final String CF_OPT_TOP_IPS = "CfOptTopIps";
+        public static final String CF_OPT_SUMMARY = "CfOptSummary";
+
         private SharedPreferences prefs;
         private String currentProfileId;
 
@@ -475,12 +482,73 @@ public class Preferences
 
         // ================= 订阅相关配置 =================
         public String getSubUrl() {
-                return prefs.getString(SUB_URL, "https://cc.meetmeag.com/xt.txt");
+                return prefs.getString(SUB_URL, "");
         }
 
         public void setSubUrl(String url) {
                 SharedPreferences.Editor editor = prefs.edit();
                 editor.putString(SUB_URL, url);
+                editor.commit();
+        }
+
+        // ================= 本地动态优选 IP (小羊算法) =================
+        public boolean getCfOptEnabled() {
+                return prefs.getBoolean(CF_OPT_ENABLED, true);
+        }
+
+        public void setCfOptEnabled(boolean enabled) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putBoolean(CF_OPT_ENABLED, enabled);
+                editor.commit();
+        }
+
+        public int getCfOptInterval() {
+                return prefs.getInt(CF_OPT_INTERVAL, 60);
+        }
+
+        public void setCfOptInterval(int intervalMinutes) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putInt(CF_OPT_INTERVAL, intervalMinutes);
+                editor.commit();
+        }
+
+        public boolean getCfOptApplyAll() {
+                return prefs.getBoolean(CF_OPT_APPLY_ALL, true);
+        }
+
+        public void setCfOptApplyAll(boolean applyAll) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putBoolean(CF_OPT_APPLY_ALL, applyAll);
+                editor.commit();
+        }
+
+        public String getCfOptLastTime() {
+                return prefs.getString(CF_OPT_LAST_TIME, "");
+        }
+
+        public void setCfOptLastTime(String timeStr) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putString(CF_OPT_LAST_TIME, timeStr);
+                editor.commit();
+        }
+
+        public String getCfOptTopIps() {
+                return prefs.getString(CF_OPT_TOP_IPS, "");
+        }
+
+        public void setCfOptTopIps(String ips) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putString(CF_OPT_TOP_IPS, ips);
+                editor.commit();
+        }
+
+        public String getCfOptSummary() {
+                return prefs.getString(CF_OPT_SUMMARY, "");
+        }
+
+        public void setCfOptSummary(String summary) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putString(CF_OPT_SUMMARY, summary);
                 editor.commit();
         }
 

@@ -559,7 +559,7 @@
                                     android:id="@+id/text_cf_opt_status"
                                     android:layout_width="wrap_content"
                                     android:layout_height="wrap_content"
-                                    android:background="@drawable/bg_latency_badge_green"
+                                    android:background="@drawable/latency_good_badge"
                                     android:paddingStart="8dp"
                                     android:paddingTop="2dp"
                                     android:paddingEnd="8dp"
@@ -584,7 +584,7 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:layout_marginTop="10dp"
-                                android:background="@drawable/bg_traffic_box"
+                                android:background="@drawable/bg_cf_box"
                                 android:orientation="vertical"
                                 android:padding="10dp">
 

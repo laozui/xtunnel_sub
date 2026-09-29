@@ -29,4 +29,8 @@
     <color name="xt_latency_bad_text">#FFF87171</color>
     <color name="xt_latency_testing_bg">#FF1E293B</color>
     <color name="xt_latency_testing_text">#FF94A3B8</color>
+
+    <color name="xt_status_running">#FF10B981</color>
+    <color name="xt_status_starting">#FF3B82F6</color>
+    <color name="xt_status_stopped">#FF94A3B8</color>
 </resources>

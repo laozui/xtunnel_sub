@@ -534,7 +534,13 @@ public class MainActivity extends AppCompatActivity {
                     buttonRunCfOpt.setEnabled(true);
                     buttonRunCfOpt.setText(R.string.cf_opt_run_btn);
                     if (success) {
-                        textCfOptStatus.setText(R.string.cf_opt_status_idle);
+                        /* 优先展示带实际耗时的结果文案（由 CfOptimizer 生成），
+                           便于直观确认提速效果；无内容时回退到默认空闲文案 */
+                        if (summary != null && !summary.isEmpty()) {
+                            textCfOptStatus.setText(summary);
+                        } else {
+                            textCfOptStatus.setText(R.string.cf_opt_status_idle);
+                        }
                         textCfOptStatus.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.xt_status_running));
                         updateCfOptimizerUi();
                         updateUi();

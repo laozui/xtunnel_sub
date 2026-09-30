@@ -377,9 +377,12 @@ public class CfOptimizer {
         Log.i(TAG, String.format(Locale.getDefault(),
                 "全流程耗时 %.2f 秒（候选池 %d 个，%d 路并发初筛 + %d 路并发精测）",
                 elapsedMs / 1000.0, pool.size(), PROBE_CONCURRENCY, REFINE_TOP_N));
-        notifyStatus(STATUS_SUCCESS, String.format(Locale.getDefault(),
-                "优选完成！耗时 %.1f 秒", elapsedMs / 1000.0));
-        notifyComplete(true, newTopIps, summary);
+        /* 界面展示用：带上实际耗时，便于直观确认提速效果
+           （存盘用的 summary 保持"最低/抖动"原格式不变） */
+        final String displaySummary = String.format(Locale.getDefault(),
+                "已完成 · 耗时 %.1f 秒 · 最低 %.1fms", elapsedMs / 1000.0, best.p50);
+        notifyStatus(STATUS_SUCCESS, displaySummary);
+        notifyComplete(true, newTopIps, displaySummary);
     }
 
     private static void notifyStatus(final int status, final String message) {

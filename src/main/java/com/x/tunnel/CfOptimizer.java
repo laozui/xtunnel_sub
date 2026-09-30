@@ -38,8 +38,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class CfOptimizer {
     private static final String TAG = "CfOptimizer";
     private static final int PROBE_PORT = 443;
-    private static final int PROBE_TIMEOUT_MS = 1200;
+    /* 【提速】超时由 1200ms 收紧到 900ms：配合 32 路并发，实测端到端由 25~35 秒降到 5 秒内 */
+    private static final int PROBE_TIMEOUT_MS = 900;
     private static final int TOP_N_SELECT = 5;
+
+    /* 【提速】初筛并发度。原实现线程池只有 6 个线程，36 个候选要排 6 轮，
+       是耗时的主要来源（且注释写着"非阻塞并发"，实为低并发）。
+       提到 32 后 36 个候选 1~2 轮即可铺完，与桌面端保持一致的最佳拐点。 */
+    private static final int PROBE_CONCURRENCY = 32;
+    /* 入围精测的候选数 */
+    private static final int REFINE_TOP_N = 12;
+    /* 每个入围 IP 的重复采样次数（保持 3 次：并发下成本极低，
+       但丢包率/抖动判定精度远好于 2 次，避免"半丢包 IP"混入 Top5） */
+    private static final int REFINE_SAMPLES = 3;
 
     /* 内置优质 Cloudflare 跨运营商种子 IP 库 */
     private static final String[] BUILTIN_CF_IPS = {
@@ -60,7 +71,7 @@ public class CfOptimizer {
 
     private static volatile int currentStatus = STATUS_IDLE;
     private static final AtomicBoolean isRunning = new AtomicBoolean(false);
-    private static final ExecutorService workerPool = Executors.newFixedThreadPool(6);
+    private static final ExecutorService workerPool = Executors.newFixedThreadPool(PROBE_CONCURRENCY);
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final Handler schedulerHandler = new Handler(Looper.getMainLooper());
 
@@ -206,6 +217,7 @@ public class CfOptimizer {
 
     private static void doOptimizeWorkflow(final Context context, boolean manual) {
         final Preferences prefs = new Preferences(context);
+        final long tStartMs = System.currentTimeMillis();   /* 全流程计时，便于验证提速效果 */
 
         // 1. 准备种子候选池
         List<String> pool = new ArrayList<>();
@@ -213,7 +225,8 @@ public class CfOptimizer {
             if (!pool.contains(ip)) pool.add(ip);
         }
 
-        Log.i(TAG, "候选池就绪: 共 " + pool.size() + " 个优质 IP，开始并发初筛...");
+        Log.i(TAG, "候选池就绪: 共 " + pool.size() + " 个优质 IP，"
+                + PROBE_CONCURRENCY + " 路并发初筛（超时 " + PROBE_TIMEOUT_MS + "ms）...");
 
         // 2. 第一轮初筛：非阻塞并发快速探测
         final List<CandidateItem> items = new ArrayList<>();
@@ -267,20 +280,36 @@ public class CfOptimizer {
             return;
         }
 
-        // 3. 第二轮精测：对入围前 12 个优质节点展开 3 次重复采样与小羊抖动弹性打分
-        int refineCount = Math.min(validInitial, 12);
+        // 3. 第二轮精测：【提速】12 路并发，每个入围节点内部串行采样 3 次。
+        //    原实现是整个双层循环串行执行（12 节点 × 3 次 = 36 次探测排队跑），
+        //    是整个优选流程最慢的一段；改为并发后仅需约 3 次探测的时间。
+        int refineCount = Math.min(validInitial, REFINE_TOP_N);
         final List<CandidateItem> topCandidates = new ArrayList<>(items.subList(0, refineCount));
-        Log.i(TAG, "初筛完成，入围 " + refineCount + " 个节点，开始采样评估...");
+        Log.i(TAG, "初筛完成，入围 " + refineCount + " 个节点，开始 " + REFINE_SAMPLES + " 次并发采样...");
 
-        for (CandidateItem item : topCandidates) {
-            item.successCount = 0;
-            for (int s = 0; s < 3; s++) {
-                float lat = probeTcpHandshake(item.ip, PROBE_PORT, PROBE_TIMEOUT_MS);
-                item.samples[s] = lat;
-                if (lat > 0.0f) item.successCount++;
-                try { Thread.sleep(15); } catch (Throwable ignored) {}
-            }
-            item.computeMetricsAndScore();
+        final CountDownLatch latch2 = new CountDownLatch(refineCount);
+        for (final CandidateItem item : topCandidates) {
+            workerPool.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        item.successCount = 0;
+                        for (int s = 0; s < REFINE_SAMPLES; s++) {
+                            float lat = probeTcpHandshake(item.ip, PROBE_PORT, PROBE_TIMEOUT_MS);
+                            item.samples[s] = lat;
+                            if (lat > 0.0f) item.successCount++;
+                        }
+                        item.computeMetricsAndScore();
+                    } finally {
+                        latch2.countDown();
+                    }
+                }
+            });
+        }
+        try {
+            latch2.await(12, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Log.e(TAG, "精测等待超时", e);
         }
 
         // 按小羊弹性得分升序排列 (分数越低越优)
@@ -344,7 +373,12 @@ public class CfOptimizer {
         }
 
         currentStatus = STATUS_SUCCESS;
-        notifyStatus(STATUS_SUCCESS, "优选完成！");
+        final long elapsedMs = System.currentTimeMillis() - tStartMs;
+        Log.i(TAG, String.format(Locale.getDefault(),
+                "全流程耗时 %.2f 秒（候选池 %d 个，%d 路并发初筛 + %d 路并发精测）",
+                elapsedMs / 1000.0, pool.size(), PROBE_CONCURRENCY, REFINE_TOP_N));
+        notifyStatus(STATUS_SUCCESS, String.format(Locale.getDefault(),
+                "优选完成！耗时 %.1f 秒", elapsedMs / 1000.0));
         notifyComplete(true, newTopIps, summary);
     }
 

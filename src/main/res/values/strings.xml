@@ -159,4 +159,13 @@
                 <item>全部分组所有节点</item>
                 <item>仅应用当前选中节点</item>
         </string-array>
+
+        <!-- Global Connections Setting -->
+        <string name="conn_card_title">节点并发连接数设置</string>
+        <string name="conn_card_desc">底层 TCP 多路复用并发数，弱网建议设小、高速网络建议设大</string>
+        <string name="conn_count_label">并发连接数：</string>
+        <string name="conn_hint">建议 2~4 (默认 3，支持 1~32)</string>
+        <string name="conn_apply_btn">保存并应用</string>
+        <string name="toast_conn_applied">已将全局并发连接数设置为 %1$d，全量节点已生效！</string>
+        <string name="toast_conn_invalid">请输入 1 到 32 之间的有效连接数</string>
 </resources>

@@ -78,6 +78,12 @@ public class MainActivity extends AppCompatActivity {
     private MaterialButton buttonClearSubNodes;
     private boolean isSyncing = false;
 
+    // 订阅并发连接数控件
+    private TextInputEditText inputGlobalConn;
+    private MaterialButton buttonConnMinus;
+    private MaterialButton buttonConnPlus;
+    private MaterialButton buttonApplyConn;
+
     // 动态优选 IP (小羊算法) 控件
     private MaterialSwitch switchCfOptEnable;
     private AutoCompleteTextView dropdownCfOptInterval;
@@ -139,6 +145,11 @@ public class MainActivity extends AppCompatActivity {
         textSubTotalNodes = findViewById(R.id.text_sub_total_nodes);
         buttonSyncSub = findViewById(R.id.button_sync_sub);
         buttonClearSubNodes = findViewById(R.id.button_clear_sub_nodes);
+
+        inputGlobalConn = findViewById(R.id.input_global_conn);
+        buttonConnMinus = findViewById(R.id.button_conn_minus);
+        buttonConnPlus = findViewById(R.id.button_conn_plus);
+        buttonApplyConn = findViewById(R.id.button_apply_conn);
 
         // 绑定动态优选 IP 控件
         switchCfOptEnable = findViewById(R.id.switch_cf_opt_enable);
@@ -450,6 +461,48 @@ public class MainActivity extends AppCompatActivity {
                     .show();
         });
 
+        // 绑定节点并发连接数设置
+        if (inputGlobalConn != null) {
+            inputGlobalConn.setText(String.valueOf(prefs.getGlobalWsConn()));
+            if (buttonConnMinus != null) {
+                buttonConnMinus.setOnClickListener(v -> {
+                    int c = parseConnInput();
+                    if (c > 1) {
+                        inputGlobalConn.setText(String.valueOf(c - 1));
+                    }
+                });
+            }
+            if (buttonConnPlus != null) {
+                buttonConnPlus.setOnClickListener(v -> {
+                    int c = parseConnInput();
+                    if (c < 32) {
+                        inputGlobalConn.setText(String.valueOf(c + 1));
+                    }
+                });
+            }
+            if (buttonApplyConn != null) {
+                buttonApplyConn.setOnClickListener(v -> {
+                    int conn = parseConnInput();
+                    if (conn < 1 || conn > 32) {
+                        Toast.makeText(this, R.string.toast_conn_invalid, Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    prefs.setGlobalWsConn(conn);
+                    for (String id : prefs.getProfileIds()) {
+                        prefs.setWsConn(id, conn);
+                    }
+                    if (prefs.getEnable()) {
+                        String curId = prefs.getCurrentProfileId();
+                        if (curId != null) {
+                            switchProfile(curId);
+                        }
+                    }
+                    updateProfileList();
+                    Toast.makeText(this, getString(R.string.toast_conn_applied, conn), Toast.LENGTH_SHORT).show();
+                });
+            }
+        }
+
         checkAutoSync();
     }
 
@@ -583,6 +636,17 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private int parseConnInput() {
+        if (inputGlobalConn == null || inputGlobalConn.getText() == null) {
+            return prefs.getGlobalWsConn();
+        }
+        try {
+            return Integer.parseInt(inputGlobalConn.getText().toString().trim());
+        } catch (Exception e) {
+            return prefs.getGlobalWsConn();
+        }
+    }
+
     private void updateSubscriptionUi() {
         long lastTime = prefs.getSubLastSyncTime();
         if (lastTime <= 0) {
@@ -594,6 +658,10 @@ public class MainActivity extends AppCompatActivity {
 
         int subCount = prefs.getSubProfileCount();
         textSubTotalNodes.setText(getString(R.string.sub_total_nodes, subCount));
+
+        if (inputGlobalConn != null && !inputGlobalConn.hasFocus()) {
+            inputGlobalConn.setText(String.valueOf(prefs.getGlobalWsConn()));
+        }
     }
 
     private void checkAutoSync() {

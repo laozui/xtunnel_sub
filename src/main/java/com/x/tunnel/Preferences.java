@@ -41,6 +41,7 @@ public class Preferences
         public static final String INSECURE = "Insecure";
         public static final String TOKEN = "Token";
         public static final String WS_CONN = "WsConn";
+        public static final String GLOBAL_WS_CONN = "GlobalWsConn";
         public static final String DISABLE_ECH = "DisableEch";
         
         public static final String CURRENT_PROFILE_ID = "CurrentProfileId";
@@ -435,16 +436,30 @@ public class Preferences
         }
 
         public int getWsConn() {
-                return prefs.getInt(getKey(WS_CONN), 3);
+                return prefs.getInt(getKey(WS_CONN), getGlobalWsConn());
         }
 
         public int getWsConn(String profileId) {
-                return prefs.getInt(getKey(WS_CONN, profileId), 3);
+                return prefs.getInt(getKey(WS_CONN, profileId), getGlobalWsConn());
+        }
+
+        public int getGlobalWsConn() {
+                return prefs.getInt(GLOBAL_WS_CONN, 3);
+        }
+
+        public void setGlobalWsConn(int n) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putInt(GLOBAL_WS_CONN, clampWsConn(n));
+                editor.commit();
+        }
+
+        public boolean hasCustomGlobalWsConn() {
+                return prefs.contains(GLOBAL_WS_CONN);
         }
 
         public int clampWsConn(int n) {
-                if (n < 2) return 2;
-                if (n > 10) return 10;
+                if (n < 1) return 1;
+                if (n > 32) return 32;
                 return n;
         }
 

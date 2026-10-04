@@ -258,8 +258,11 @@ public class SubscriptionManager {
             prefs.setToken(id, node.token);
             prefs.setPrefIp(id, node.ip);
 
-            // 属性根据订阅配置自动注入
-            prefs.setWsConn(id, prefs.clampWsConn(node.connections));
+            // 属性根据订阅配置自动注入：若用户设置了全局并发偏好，优先应用用户的全局偏好
+            int effectiveConn = prefs.hasCustomGlobalWsConn()
+                    ? prefs.getGlobalWsConn()
+                    : prefs.clampWsConn(node.connections);
+            prefs.setWsConn(id, effectiveConn);
             prefs.setUdpBlockPorts(id, node.block);
             prefs.setEchDns(id, "https://doh.pub/dns-query");
             prefs.setEchDomain(id, "cloudflare-ech.com");

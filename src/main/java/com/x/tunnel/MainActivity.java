@@ -494,7 +494,7 @@ public class MainActivity extends AppCompatActivity {
                     if (prefs.getEnable()) {
                         String curId = prefs.getCurrentProfileId();
                         if (curId != null) {
-                            switchProfile(curId);
+                            sendSwitchIntent(curId, prefs.getProfileName(curId));
                         }
                     }
                     updateProfileList();

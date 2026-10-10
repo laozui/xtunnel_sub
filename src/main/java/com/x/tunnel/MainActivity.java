@@ -512,10 +512,10 @@ public class MainActivity extends AppCompatActivity {
             prefs.setCfOptEnabled(isChecked);
             if (isChecked) {
                 CfOptimizer.startScheduler(MainActivity.this);
-                Toast.makeText(this, "已启用小羊优选，自动后台定期巡检", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "已启用智能优选 (启动及WiFi/5G切换自适应，省电零干扰)", Toast.LENGTH_SHORT).show();
             } else {
-                CfOptimizer.stopScheduler();
-                Toast.makeText(this, "已停用小羊优选", Toast.LENGTH_SHORT).show();
+                CfOptimizer.stopScheduler(MainActivity.this);
+                Toast.makeText(this, "已停用本地智能优选", Toast.LENGTH_SHORT).show();
             }
         });
 

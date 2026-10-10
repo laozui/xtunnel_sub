@@ -10,8 +10,8 @@ android {
         applicationId "com.x.tunnel"
         minSdk 21
         targetSdk 34
-        versionCode 18
-        versionName "2.9.8-sub"
+        versionCode 19
+        versionName "2.9.9-sub"
 
         ndk {
             abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'

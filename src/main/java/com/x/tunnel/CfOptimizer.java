@@ -2,6 +2,11 @@ package com.x.tunnel;
 
 import android.content.Context;
 import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
@@ -40,7 +45,8 @@ public class CfOptimizer {
     private static final int PROBE_PORT = 443;
     /* 【提速】超时由 1200ms 收紧到 900ms：配合 32 路并发，实测端到端由 25~35 秒降到 5 秒内 */
     private static final int PROBE_TIMEOUT_MS = 900;
-    private static final int TOP_N_SELECT = 5;
+    /* 【科学收敛】选取 Top 3 最优黄金 IP (由 5 降为 3，剔除长尾劣质 IP 拖慢吞吐，与 connections=3~4 完美契合) */
+    private static final int TOP_N_SELECT = 3;
 
     /* 【提速】初筛并发度。原实现线程池只有 6 个线程，36 个候选要排 6 轮，
        是耗时的主要来源（且注释写着"非阻塞并发"，实为低并发）。
@@ -407,44 +413,117 @@ public class CfOptimizer {
         });
     }
 
+    private static ConnectivityManager.NetworkCallback networkCallback = null;
+    private static String lastNetworkType = "";
+    private static long lastTriggerTime = 0;
+
     /**
-     * 启动定时自动巡检调度器
+     * 启动自适应网络事件感知优化器
+     * - 规则：
+     *   1. 启动时执行一次预热优选 (免外部依赖，纯本地高质种子池)
+     *   2. 监听系统网络变化 (WiFi <-> 5G/4G 切换时防抖触发)
+     *   3. 连接稳定期间零后台轮询，绝对省电省流，不再频繁微重载！
      */
     public static void startScheduler(final Context context) {
         stopScheduler();
 
-        Preferences prefs = new Preferences(context);
+        final Context appContext = context.getApplicationContext();
+        Preferences prefs = new Preferences(appContext);
         if (!prefs.getCfOptEnabled()) return;
 
-        int intervalMinutes = prefs.getCfOptInterval();
-        if (intervalMinutes <= 0) intervalMinutes = 60;
-        long intervalMs = intervalMinutes * 60L * 1000L;
+        // 1. 启动时延迟 2 秒预热优选一次
+        schedulerHandler.postDelayed(() -> {
+            Preferences p = new Preferences(appContext);
+            if (p.getCfOptEnabled()) {
+                Log.i(TAG, "CfOptimizer: 启动预热优选触发...");
+                startOptimize(appContext, false);
+            }
+        }, 2000);
 
-        schedulerRunnable = new Runnable() {
-            @Override
-            public void run() {
+        // 2. 注册系统网络变更感知 (WiFi <-> 5G 切换监听)
+        registerNetworkWatcher(appContext);
+        Log.i(TAG, "CfOptimizer: 自适应事件驱动优化器已激活 (启动 + 切网触发，稳定期间静默)");
+    }
+
+    private static synchronized void registerNetworkWatcher(final Context context) {
+        try {
+            final ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return;
+
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                    handleNetworkChange(context, capabilities);
+                }
+
+                @Override
+                public void onAvailable(Network network) {
+                    if (cm != null) {
+                        NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+                        handleNetworkChange(context, caps);
+                    }
+                }
+            };
+
+            NetworkRequest request = new NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build();
+            cm.registerNetworkCallback(request, networkCallback);
+        } catch (Throwable t) {
+            Log.w(TAG, "注册网络监听失败: " + t.getMessage());
+        }
+    }
+
+    private static void handleNetworkChange(final Context context, NetworkCapabilities caps) {
+        if (caps == null) return;
+        String curType = "UNKNOWN";
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+            curType = "WIFI";
+        } else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+            curType = "CELLULAR";
+        } else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) {
+            curType = "ETHERNET";
+        }
+
+        // 检查网络传输类型是否发生实质变更 (如 WiFi <-> 移动数据 5G)
+        boolean typeChanged = !curType.equals("UNKNOWN") && !curType.equals(lastNetworkType) && !lastNetworkType.isEmpty();
+        lastNetworkType = curType;
+
+        long now = System.currentTimeMillis();
+        // 防抖保护：5 秒内不重复触发
+        if (typeChanged && (now - lastTriggerTime > 5000)) {
+            lastTriggerTime = now;
+            Log.i(TAG, "感知到网络环境变更 -> " + curType + "，延迟 2.5 秒自适应优选...");
+            schedulerHandler.postDelayed(() -> {
                 Preferences p = new Preferences(context);
                 if (p.getCfOptEnabled()) {
-                    startOptimize(context.getApplicationContext(), false);
+                    startOptimize(context, false);
                 }
-                int nextMinutes = p.getCfOptInterval();
-                if (nextMinutes <= 0) nextMinutes = 60;
-                schedulerHandler.postDelayed(this, nextMinutes * 60L * 1000L);
-            }
-        };
-
-        // 启动时延迟 3 秒启动首次预热巡检，之后按周期运行
-        schedulerHandler.postDelayed(schedulerRunnable, 3000);
-        Log.i(TAG, "CfOptimizer 定时巡检已启动，周期: " + intervalMinutes + " 分钟");
+            }, 2500);
+        }
     }
 
     /**
-     * 停止定时调度器
+     * 停止调度器与反注册网络监听
      */
+    public static synchronized void stopScheduler(final Context context) {
+        if (context != null && networkCallback != null) {
+            try {
+                ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+                if (cm != null) {
+                    cm.unregisterNetworkCallback(networkCallback);
+                }
+            } catch (Throwable ignored) {}
+            networkCallback = null;
+        }
+        stopScheduler();
+    }
+
     public static void stopScheduler() {
         if (schedulerRunnable != null) {
             schedulerHandler.removeCallbacks(schedulerRunnable);
             schedulerRunnable = null;
         }
+        schedulerHandler.removeCallbacksAndMessages(null);
     }
 }

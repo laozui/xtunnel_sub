@@ -351,24 +351,15 @@ public class CfOptimizer {
         boolean applyAll = prefs.getCfOptApplyAll();
         if (applyAll) {
             Set<String> allIds = prefs.getProfileIds();
-            int appliedCount = 0;
             for (String pid : allIds) {
-                if (!prefs.getProfileCfOpt(pid)) {
-                    continue; // 跳过用户明确禁用优选的节点 (如 xtcf 等)
-                }
                 prefs.setPrefIp(pid, newTopIps);
-                appliedCount++;
             }
-            Log.i(TAG, "已将 Top 3 优选 IP 同步应用到 " + appliedCount + " 个启用优选的节点 (其余直连节点保持原样): " + newTopIps);
+            Log.i(TAG, "已将 Top 5 优选 IP 同步应用到全部 " + allIds.size() + " 个节点: " + newTopIps);
         } else {
             String currentId = prefs.getCurrentProfileId();
             if (!TextUtils.isEmpty(currentId)) {
-                if (prefs.getProfileCfOpt(currentId)) {
-                    prefs.setPrefIp(currentId, newTopIps);
-                    Log.i(TAG, "已将 Top 3 优选 IP 应用到当前节点 [" + currentId + "]: " + newTopIps);
-                } else {
-                    Log.i(TAG, "当前节点 [" + currentId + "] 设为直连模式，跳过注入优选 IP。");
-                }
+                prefs.setPrefIp(currentId, newTopIps);
+                Log.i(TAG, "已将 Top 5 优选 IP 应用到当前节点 [" + currentId + "]: " + newTopIps);
             }
         }
 

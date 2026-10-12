@@ -24,8 +24,6 @@ public class ProfileEditActivity extends AppCompatActivity {
     private TextInputEditText inputProfileName;
     private TextInputEditText inputWssAddr;
     private TextInputEditText inputToken;
-    private MaterialSwitch switchProfileCfOpt;
-    private com.google.android.material.textfield.TextInputLayout layoutPrefIp;
     private TextInputEditText inputPrefIp;
     private AutoCompleteTextView inputIpsPref;
     private TextInputEditText inputWsConn;
@@ -52,8 +50,6 @@ public class ProfileEditActivity extends AppCompatActivity {
         inputWssAddr = findViewById(R.id.input_wss_addr);
         inputToken = findViewById(R.id.input_token);
         inputPrefIp = findViewById(R.id.input_pref_ip);
-        layoutPrefIp = findViewById(R.id.layout_pref_ip);
-        switchProfileCfOpt = findViewById(R.id.switch_profile_cf_opt);
         inputIpsPref = findViewById(R.id.input_ips_pref);
         inputWsConn = findViewById(R.id.input_ws_conn);
         inputUdpBlockPorts = findViewById(R.id.input_udp_block_ports);
@@ -61,13 +57,6 @@ public class ProfileEditActivity extends AppCompatActivity {
         inputEchDomain = findViewById(R.id.input_ech_domain);
         switchDisableEch = findViewById(R.id.switch_disable_ech);
         switchInsecure = findViewById(R.id.switch_insecure);
-
-        switchProfileCfOpt.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            if (layoutPrefIp != null) layoutPrefIp.setEnabled(isChecked);
-            if (!isChecked && inputPrefIp != null) {
-                inputPrefIp.setText("");
-            }
-        });
 
         inputIpsPref.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, getResources().getStringArray(R.array.ips_pref_entries)));
         inputIpsPref.setOnClickListener(v -> inputIpsPref.showDropDown());
@@ -94,8 +83,6 @@ public class ProfileEditActivity extends AppCompatActivity {
             inputProfileName.setText("");
             inputWssAddr.setText("");
             inputToken.setText("");
-            switchProfileCfOpt.setChecked(true);
-            if (layoutPrefIp != null) layoutPrefIp.setEnabled(true);
             inputPrefIp.setText("");
             inputIpsPref.setText(getResources().getStringArray(R.array.ips_pref_entries)[0], false);
             inputWsConn.setText(String.valueOf(3));
@@ -111,12 +98,7 @@ public class ProfileEditActivity extends AppCompatActivity {
         inputProfileName.setText(prefs.getProfileName(profileId));
         inputWssAddr.setText(prefs.getWssAddr(profileId));
         inputToken.setText(prefs.getToken(profileId));
-
-        boolean cfOptOn = prefs.getProfileCfOpt(profileId);
-        switchProfileCfOpt.setChecked(cfOptOn);
-        if (layoutPrefIp != null) layoutPrefIp.setEnabled(cfOptOn);
-        inputPrefIp.setText(cfOptOn ? prefs.getPrefIp(profileId) : "");
-
+        inputPrefIp.setText(prefs.getPrefIp(profileId));
         inputIpsPref.setText(getIpsPrefLabel(prefs.getIpsPref(profileId)), false);
         inputWsConn.setText(String.valueOf(prefs.clampWsConn(prefs.getWsConn(profileId))));
         inputUdpBlockPorts.setText(prefs.getUdpBlockPorts(profileId));
@@ -150,15 +132,7 @@ public class ProfileEditActivity extends AppCompatActivity {
 
         prefs.setWssAddr(targetId, textOf(inputWssAddr).trim());
         prefs.setToken(targetId, textOf(inputToken));
-
-        boolean cfOptOn = switchProfileCfOpt.isChecked();
-        prefs.setProfileCfOpt(targetId, cfOptOn);
-        if (cfOptOn) {
-            prefs.setPrefIp(targetId, textOf(inputPrefIp).trim());
-        } else {
-            prefs.setPrefIp(targetId, ""); // 禁用优选时强制清空
-        }
-
+        prefs.setPrefIp(targetId, textOf(inputPrefIp).trim());
         prefs.setIpsPref(targetId, getIpsPrefValue(inputIpsPref.getText() == null ? "" : inputIpsPref.getText().toString()));
         prefs.setWsConn(targetId, prefs.clampWsConn(parseWsConn()));
         prefs.setUdpBlockPorts(targetId, textOf(inputUdpBlockPorts).trim());

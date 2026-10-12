@@ -347,34 +347,9 @@ public class Preferences
                 editor.commit();
         }
 
-        public static final String PROFILE_CF_OPT = "ProfileCfOpt";
+        public String getPrefIp() { return prefs.getString(getKey(PREF_IP), ""); }
 
-        public String getPrefIp() {
-                if (!getProfileCfOpt(currentProfileId)) {
-                        return "";
-                }
-                return prefs.getString(getKey(PREF_IP), "");
-        }
-
-        public String getPrefIp(String profileId) {
-                if (!getProfileCfOpt(profileId)) {
-                        return "";
-                }
-                return prefs.getString(getKey(PREF_IP, profileId), "");
-        }
-
-        public boolean getProfileCfOpt(String profileId) {
-                if (profileId == null) return true;
-                String addr = prefs.getString(getKey(WSS_ADDR, profileId), "");
-                boolean def = !addr.contains("xtcf");
-                return prefs.getBoolean(getKey(PROFILE_CF_OPT, profileId), def);
-        }
-
-        public void setProfileCfOpt(String profileId, boolean enabled) {
-                SharedPreferences.Editor editor = prefs.edit();
-                editor.putBoolean(getKey(PROFILE_CF_OPT, profileId), enabled);
-                editor.commit();
-        }
+        public String getPrefIp(String profileId) { return prefs.getString(getKey(PREF_IP, profileId), ""); }
 
         public void setPrefIp(String ip) {
                 SharedPreferences.Editor editor = prefs.edit();

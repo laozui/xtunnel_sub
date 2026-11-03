@@ -92,7 +92,16 @@ public class CfIpPool {
             if (cm == null) return SLOT_WIFI;
             Network active = cm.getActiveNetwork();
             NetworkCapabilities caps = active == null ? null : cm.getNetworkCapabilities(active);
+
+            /* 注意：VPN 建立后 getActiveNetwork() 返回的是 VPN 网络，
+               它只带 TRANSPORT_VPN，无法据此判断底层是 WiFi 还是哪张卡。
+               此时代理进程正在跑，必须回溯到真实底层承载网络。 */
+            if (caps == null || caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                NetPick pick = findUnderlying(cm);
+                caps = (pick == null) ? null : pick.caps;
+            }
             if (caps == null) return SLOT_WIFI;
+
             if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
                 return detectCellularSlot(context);
             }
@@ -102,6 +111,65 @@ public class CfIpPool {
             Log.w(TAG, "detectSlot 失败: " + t.getMessage());
             return SLOT_WIFI;
         }
+    }
+
+    /**
+     * 取当前真实底层承载网络（非 VPN），供探测 socket 绑定使用；
+     * VPN 在线时探测若走隧道，测到的就不是本地线路质量了。
+     */
+    public static Network getUnderlyingNetwork(Context context) {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return null;
+            Network active = cm.getActiveNetwork();
+            NetworkCapabilities caps = active == null ? null : cm.getNetworkCapabilities(active);
+            if (caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                return active;
+            }
+            NetPick pick = findUnderlying(cm);
+            return (pick == null) ? null : pick.network;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static class NetPick {
+        Network network;
+        NetworkCapabilities caps;
+    }
+
+    /**
+     * 在 VPN 在线时回溯真实底层承载：优先 WiFi（系统默认优先无线局域网），否则取蜂窝。
+     */
+    private static NetPick findUnderlying(ConnectivityManager cm) {
+        NetPick wifi = null;
+        NetPick cellular = null;
+        NetPick other = null;
+        try {
+            Network[] all = cm.getAllNetworks();
+            if (all == null) return null;
+            for (Network n : all) {
+                NetworkCapabilities c = cm.getNetworkCapabilities(n);
+                if (c == null) continue;
+                if (c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue;
+                if (!c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue;
+                NetPick pick = new NetPick();
+                pick.network = n;
+                pick.caps = c;
+                if (c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                    wifi = pick;
+                } else if (c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                    cellular = pick;
+                } else if (other == null) {
+                    other = pick;
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "回溯底层网络失败: " + t.getMessage());
+        }
+        if (wifi != null) return wifi;
+        if (cellular != null) return cellular;
+        return other;
     }
 
     private static String detectCellularSlot(Context context) {
@@ -279,8 +347,9 @@ public class CfIpPool {
                     final int total = candidates.size();
                     Log.i(TAG, "候选 " + total + " 个（含旧池 " + oldPool.size() + " 个）");
 
-                    // 2. 并发探测
-                    List<IpLatency> alive = probeAll(candidates, total, callback);
+                    // 2. 并发探测（绑定底层真实网络，避免 VPN 隧道干扰测量）
+                    Network bindNet = getUnderlyingNetwork(appCtx);
+                    List<IpLatency> alive = probeAll(candidates, total, bindNet, callback);
 
                     if (alive.isEmpty()) {
                         message = "未探测到可用 IP，请检查当前网络连通性";
@@ -386,7 +455,8 @@ public class CfIpPool {
         }
     }
 
-    private static List<IpLatency> probeAll(List<String> candidates, final int total, final PoolCallback callback) {
+    private static List<IpLatency> probeAll(List<String> candidates, final int total,
+                                            final Network bindNet, final PoolCallback callback) {
         final List<IpLatency> alive = Collections.synchronizedList(new ArrayList<IpLatency>());
         final int threads = Math.min(SCAN_CONCURRENCY, Math.max(1, candidates.size()));
         ExecutorService pool = Executors.newFixedThreadPool(threads);
@@ -400,7 +470,7 @@ public class CfIpPool {
                     @Override
                     public void run() {
                         try {
-                            float lat = CfOptimizer.probeTcpHandshake(ip, PROBE_PORT, SCAN_TIMEOUT_MS);
+                            float lat = CfOptimizer.probeTcpHandshake(ip, PROBE_PORT, SCAN_TIMEOUT_MS, bindNet);
                             if (lat > 0.0f) {
                                 alive.add(new IpLatency(ip, lat));
                             }

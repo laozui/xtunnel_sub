@@ -111,11 +111,30 @@ public class CfOptimizer {
      * 单次 TCP 握手探测 (单调纳秒时钟)
      */
     public static float probeTcpHandshake(String ip, int port, int timeoutMs) {
+        return probeTcpHandshake(ip, port, timeoutMs, null);
+    }
+
+    /**
+     * 单次 TCP 握手探测，可绑定到指定底层网络。
+     *
+     * 为什么需要 bindNetwork：VPN 建立后进程默认流量全部进入 tun，
+     * 此时直接 new Socket() 探测 104.x 实际走的是「隧道」而非「本地宽带 → Cloudflare」，
+     * 测出来的延迟并不能代表本地线路的真实质量，会污染 IP 池。
+     * 绑定到 WiFi/蜂窝底层 Network 后，socket 直发本地网卡，测的才是真实路径。
+     */
+    public static float probeTcpHandshake(String ip, int port, int timeoutMs, Network bindNetwork) {
         long startNano = System.nanoTime();
         Socket socket = null;
         try {
             socket = new Socket();
             socket.setTcpNoDelay(true);
+            if (bindNetwork != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                try {
+                    bindNetwork.bindSocket(socket);
+                } catch (Throwable ignored) {
+                    /* 绑定失败则退回默认路由，不影响主流程 */
+                }
+            }
             socket.connect(new InetSocketAddress(ip, port), timeoutMs);
             long endNano = System.nanoTime();
             return (endNano - startNano) / 1000000.0f;
@@ -248,6 +267,10 @@ public class CfOptimizer {
         final int targetN = Math.max(1, Math.min(32, prefs.getWsConn()));
         Log.i(TAG, "目标优选数量 N = " + targetN + "（取自当前节点并发连接数）");
 
+        /* VPN 在线时探测必须绑定底层网络，否则 socket 会落进 tun 隧道，
+           测到的是隧道质量而不是本地宽带 → Cloudflare 的真实路径质量。 */
+        final Network bindNet = CfIpPool.getUnderlyingNetwork(context);
+
         // 2. 第一轮初筛：非阻塞并发快速探测
         Log.i(TAG, "候选池就绪: 共 " + pool.size() + " 个 IP，"
                 + PROBE_CONCURRENCY + " 路并发初筛（超时 " + PROBE_TIMEOUT_MS + "ms）...");
@@ -260,7 +283,7 @@ public class CfOptimizer {
                 @Override
                 public void run() {
                     try {
-                        float lat = probeTcpHandshake(item.ip, PROBE_PORT, PROBE_TIMEOUT_MS);
+                        float lat = probeTcpHandshake(item.ip, PROBE_PORT, PROBE_TIMEOUT_MS, bindNet);
                         if (lat > 0.0f) {
                             item.firstLatency = lat;
                             item.firstSuccess = true;
@@ -317,7 +340,7 @@ public class CfOptimizer {
                     try {
                         item.successCount = 0;
                         for (int s = 0; s < REFINE_SAMPLES; s++) {
-                            float lat = probeTcpHandshake(item.ip, PROBE_PORT, PROBE_TIMEOUT_MS);
+                            float lat = probeTcpHandshake(item.ip, PROBE_PORT, PROBE_TIMEOUT_MS, bindNet);
                             item.samples[s] = lat;
                             if (lat > 0.0f) item.successCount++;
                         }
@@ -507,25 +530,14 @@ public class CfOptimizer {
     }
 
     private static void handleNetworkChange(final Context context, NetworkCapabilities caps) {
-        if (caps == null) return;
-        String curType = "UNKNOWN";
-        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-            curType = "WIFI";
-        } else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
-            curType = "CELLULAR";
-        } else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) {
-            curType = "ETHERNET";
-        }
-
-        /* 变更指纹 = 传输类型 + 网络分区。
-           蜂窝下进一步细分到 wifi / 卡槽1 / 卡槽2，这样「主数据卡从卡1切到卡2」也能被识别为线路变更，
-           否则两张卡都报 CELLULAR 会被误判为"没变"，导致优选 IP 仍停留在上一条线路的结果上。 */
-        String slot = "CELLULAR".equals(curType) ? CfIpPool.detectSlot(context) : CfIpPool.SLOT_WIFI;
+        /* 变更指纹 = 网络分区（wifi / 卡槽1 / 卡槽2）。
+           VPN 在线时回调给出的 caps 只带 TRANSPORT_VPN，据此判不出线路，
+           因此统一交给 CfIpPool.detectSlot 回溯真实底层承载网络。 */
+        String slot = CfIpPool.detectSlot(context);
+        String curType = CfIpPool.SLOT_WIFI.equals(slot) ? "WIFI" : "CELLULAR";
         String curKey = curType + ":" + slot;
 
-        boolean typeChanged = !curKey.equals("UNKNOWN:wifi")
-                && !curKey.equals(lastNetworkType)
-                && !lastNetworkType.isEmpty();
+        boolean typeChanged = !curKey.equals(lastNetworkType) && !lastNetworkType.isEmpty();
         lastNetworkType = curKey;
 
         long now = System.currentTimeMillis();

@@ -37,16 +37,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 2. 两级漏斗机制：初筛并发淘汰不可达节点 -> 12强入围节点三轮抖动采样
  * 3. 小羊弹性质量综合打分模型：
  *    Score = p50 * (1.0 + 1.5 * CV) + 0.8 * (p95 - p50) + 15.0 * loss_pct
- * 4. 自动选取 Top 5 最优 IP，持久化写入配置
+ * 4. 自动选取 Top N 最优 IP（N = 节点并发连接数），持久化写入配置
  * 5. 若 VPN 正在运行，通过 TProxyService ACTION_SWITCH 实现无感平滑热重载 (钥匙不闪断)
+ *
+ * 候选池来源（v2.10 起）：优先读取 {@link CfIpPool} 的三分区本地 IP 池（WiFi / 卡槽1 / 卡槽2 合并），
+ * 本地池为空时退回内置种子库兜底。
  */
 public class CfOptimizer {
     private static final String TAG = "CfOptimizer";
     private static final int PROBE_PORT = 443;
     /* 【提速】超时由 1200ms 收紧到 900ms：配合 32 路并发，实测端到端由 25~35 秒降到 5 秒内 */
     private static final int PROBE_TIMEOUT_MS = 900;
-    /* 【科学收敛】选取 Top 3 最优黄金 IP (由 5 降为 3，剔除长尾劣质 IP 拖慢吞吐，与 connections=3~4 完美契合) */
-    private static final int TOP_N_SELECT = 3;
+    /* 入围精测的最小候选数；实际取 max(该值, 目标并发数 × 3)，保证 Top N 有足够选择余地 */
 
     /* 【提速】初筛并发度。原实现线程池只有 6 个线程，36 个候选要排 6 轮，
        是耗时的主要来源（且注释写着"非阻塞并发"，实为低并发）。
@@ -225,16 +227,30 @@ public class CfOptimizer {
         final Preferences prefs = new Preferences(context);
         final long tStartMs = System.currentTimeMillis();   /* 全流程计时，便于验证提速效果 */
 
-        // 1. 准备种子候选池
+        // 1. 准备候选池：优先使用【本地可用 IP 池（三分区合并）】
+        //    三分区 = WiFi 池 + 卡槽1 池 + 卡槽2 池，合并去重后最多 150 个，
+        //    全部是真实在本机网络环境下握手成功过的 IP，命中率远高于写死的种子库。
         List<String> pool = new ArrayList<>();
-        for (String ip : BUILTIN_CF_IPS) {
-            if (!pool.contains(ip)) pool.add(ip);
+        List<String> localPool = CfIpPool.getMergedPool(context, prefs);
+        if (!localPool.isEmpty()) {
+            pool.addAll(localPool);
+            Log.i(TAG, "候选池来源: 本地 IP 池（三分区合并）共 " + pool.size() + " 个");
+        }
+        // 本地池为空（首次安装 / 从未更新过）时，退回内置种子库兜底，保证功能可用
+        if (pool.isEmpty()) {
+            for (String ip : BUILTIN_CF_IPS) {
+                if (!pool.contains(ip)) pool.add(ip);
+            }
+            Log.i(TAG, "候选池来源: 内置种子库（本地 IP 池为空，建议先在设置页更新一次 IP 池）共 " + pool.size() + " 个");
         }
 
-        Log.i(TAG, "候选池就绪: 共 " + pool.size() + " 个优质 IP，"
-                + PROBE_CONCURRENCY + " 路并发初筛（超时 " + PROBE_TIMEOUT_MS + "ms）...");
+        // 目标数量 N = 当前节点的并发连接数（1~32，默认 3）
+        final int targetN = Math.max(1, Math.min(32, prefs.getWsConn()));
+        Log.i(TAG, "目标优选数量 N = " + targetN + "（取自当前节点并发连接数）");
 
         // 2. 第一轮初筛：非阻塞并发快速探测
+        Log.i(TAG, "候选池就绪: 共 " + pool.size() + " 个 IP，"
+                + PROBE_CONCURRENCY + " 路并发初筛（超时 " + PROBE_TIMEOUT_MS + "ms）...");
         final List<CandidateItem> items = new ArrayList<>();
         for (String ip : pool) items.add(new CandidateItem(ip));
 
@@ -289,7 +305,7 @@ public class CfOptimizer {
         // 3. 第二轮精测：【提速】12 路并发，每个入围节点内部串行采样 3 次。
         //    原实现是整个双层循环串行执行（12 节点 × 3 次 = 36 次探测排队跑），
         //    是整个优选流程最慢的一段；改为并发后仅需约 3 次探测的时间。
-        int refineCount = Math.min(validInitial, REFINE_TOP_N);
+        int refineCount = Math.min(validInitial, Math.max(REFINE_TOP_N, targetN * 3));
         final List<CandidateItem> topCandidates = new ArrayList<>(items.subList(0, refineCount));
         Log.i(TAG, "初筛完成，入围 " + refineCount + " 个节点，开始 " + REFINE_SAMPLES + " 次并发采样...");
 
@@ -326,8 +342,8 @@ public class CfOptimizer {
             }
         });
 
-        // 4. 选取 Top 5 最优 IP
-        int pickCount = Math.min(topCandidates.size(), TOP_N_SELECT);
+        // 4. 选取 Top N 最优 IP（N = 当前节点并发连接数，由目标并发决定实际需要的 IP 条数）
+        int pickCount = Math.min(topCandidates.size(), targetN);
         StringBuilder sbTop = new StringBuilder();
         for (int i = 0; i < pickCount; i++) {
             if (i > 0) sbTop.append(",");
@@ -354,12 +370,12 @@ public class CfOptimizer {
             for (String pid : allIds) {
                 prefs.setPrefIp(pid, newTopIps);
             }
-            Log.i(TAG, "已将 Top 5 优选 IP 同步应用到全部 " + allIds.size() + " 个节点: " + newTopIps);
+            Log.i(TAG, "已将 Top " + targetN + " 优选 IP 同步应用到全部 " + allIds.size() + " 个节点: " + newTopIps);
         } else {
             String currentId = prefs.getCurrentProfileId();
             if (!TextUtils.isEmpty(currentId)) {
                 prefs.setPrefIp(currentId, newTopIps);
-                Log.i(TAG, "已将 Top 5 优选 IP 应用到当前节点 [" + currentId + "]: " + newTopIps);
+                Log.i(TAG, "已将 Top " + targetN + " 优选 IP 应用到当前节点 [" + currentId + "]: " + newTopIps);
             }
         }
 
@@ -440,6 +456,22 @@ public class CfOptimizer {
             }
         }, 2000);
 
+        // 1.5 延迟 8 秒检查「本地 IP 池」今日是否已更新，未更新则在后台自动补一次，
+        //     更新完成后若已启用优选，再补跑一轮优选，把新扫到的优质 IP 用起来。
+        schedulerHandler.postDelayed(() -> {
+            Preferences p = new Preferences(appContext);
+            if (!p.getCfOptEnabled()) return;
+            CfIpPool.maybeDailyUpdate(appContext, (success, slot, poolSize, message) -> {
+                Log.i(TAG, "IP 池每日更新结果: " + message);
+                if (success) {
+                    Preferences p2 = new Preferences(appContext);
+                    if (p2.getCfOptEnabled()) {
+                        startOptimize(appContext, false);
+                    }
+                }
+            });
+        }, 8000);
+
         // 2. 注册系统网络变更感知 (WiFi <-> 5G 切换监听)
         registerNetworkWatcher(appContext);
         Log.i(TAG, "CfOptimizer: 自适应事件驱动优化器已激活 (启动 + 切网触发，稳定期间静默)");
@@ -485,18 +517,33 @@ public class CfOptimizer {
             curType = "ETHERNET";
         }
 
-        // 检查网络传输类型是否发生实质变更 (如 WiFi <-> 移动数据 5G)
-        boolean typeChanged = !curType.equals("UNKNOWN") && !curType.equals(lastNetworkType) && !lastNetworkType.isEmpty();
-        lastNetworkType = curType;
+        /* 变更指纹 = 传输类型 + 网络分区。
+           蜂窝下进一步细分到 wifi / 卡槽1 / 卡槽2，这样「主数据卡从卡1切到卡2」也能被识别为线路变更，
+           否则两张卡都报 CELLULAR 会被误判为"没变"，导致优选 IP 仍停留在上一条线路的结果上。 */
+        String slot = "CELLULAR".equals(curType) ? CfIpPool.detectSlot(context) : CfIpPool.SLOT_WIFI;
+        String curKey = curType + ":" + slot;
+
+        boolean typeChanged = !curKey.equals("UNKNOWN:wifi")
+                && !curKey.equals(lastNetworkType)
+                && !lastNetworkType.isEmpty();
+        lastNetworkType = curKey;
 
         long now = System.currentTimeMillis();
         // 防抖保护：5 秒内不重复触发
         if (typeChanged && (now - lastTriggerTime > 5000)) {
             lastTriggerTime = now;
-            Log.i(TAG, "感知到网络环境变更 -> " + curType + "，延迟 2.5 秒自适应优选...");
+            Log.i(TAG, "感知到网络环境变更 -> " + curKey + "，延迟 2.5 秒自适应优选...");
             schedulerHandler.postDelayed(() -> {
                 Preferences p = new Preferences(context);
                 if (p.getCfOptEnabled()) {
+                    /* 若新线路对应的 IP 池今天还没更新过，先静默更新（扫描完成后会自动补跑一轮优选），
+                       这样换到新运营商时不会拿旧线路的 IP 硬试。 */
+                    CfIpPool.maybeDailyUpdate(context, (success, s, size, message) -> {
+                        Preferences p2 = new Preferences(context);
+                        if (success && p2.getCfOptEnabled()) {
+                            startOptimize(context, false);
+                        }
+                    });
                     startOptimize(context, false);
                 }
             }, 2500);

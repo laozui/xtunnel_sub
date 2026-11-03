@@ -4,7 +4,9 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.VpnService;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -94,6 +96,13 @@ public class MainActivity extends AppCompatActivity {
     private TextView textCfOptSummary;
     private MaterialButton buttonRunCfOpt;
 
+    // 本地可用 IP 池（三网络分区）控件
+    private TextView textCfPoolNetwork;
+    private TextView textCfPoolWifi;
+    private TextView textCfPoolSim1;
+    private TextView textCfPoolSim2;
+    private MaterialButton buttonUpdateCfPool;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -161,10 +170,21 @@ public class MainActivity extends AppCompatActivity {
         textCfOptSummary = findViewById(R.id.text_cf_opt_summary);
         buttonRunCfOpt = findViewById(R.id.button_run_cf_opt);
 
+        // 绑定本地可用 IP 池控件
+        textCfPoolNetwork = findViewById(R.id.text_cf_pool_network);
+        textCfPoolWifi = findViewById(R.id.text_cf_pool_wifi);
+        textCfPoolSim1 = findViewById(R.id.text_cf_pool_sim1);
+        textCfPoolSim2 = findViewById(R.id.text_cf_pool_sim2);
+        buttonUpdateCfPool = findViewById(R.id.button_update_cf_pool);
+
         setupTabLayout();
         setupSubscriptionUi();
+        setupCfPoolUi();
         setupCfOptimizerUi();
         setupSearchUi();
+
+        // 延迟请求读取电话状态（仅用于识别卡槽 1 / 卡槽 2，拒绝也不影响功能）
+        new Handler(Looper.getMainLooper()).postDelayed(this::requestPhoneStatePermissionIfNeeded, 1500);
 
         // 独立原生 RecyclerView 列表配置
         RecyclerView recyclerProfiles = findViewById(R.id.recycler_profiles);
@@ -506,6 +526,93 @@ public class MainActivity extends AppCompatActivity {
         checkAutoSync();
     }
 
+    /**
+     * 本地可用 IP 池（WiFi / 卡槽1 / 卡槽2 三分区）界面初始化。
+     */
+    private void setupCfPoolUi() {
+        buttonUpdateCfPool.setOnClickListener(v -> {
+            if (CfIpPool.isScanning()) {
+                Toast.makeText(this, "IP 池正在更新中，请稍候…", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Toast.makeText(this, R.string.toast_cf_pool_started, Toast.LENGTH_SHORT).show();
+            buttonUpdateCfPool.setEnabled(false);
+            buttonUpdateCfPool.setText(R.string.cf_pool_updating);
+
+            CfIpPool.updateCurrentPoolAsync(this, true, new CfIpPool.PoolCallback() {
+                @Override
+                public void onProgress(int done, int total, String hint) {
+                    runOnUiThread(() -> {
+                        if (buttonUpdateCfPool != null) {
+                            buttonUpdateCfPool.setText("⏳ 扫描中 " + done + "/" + total);
+                        }
+                    });
+                }
+
+                @Override
+                public void onFinish(boolean success, String slot, int poolSize, String message) {
+                    runOnUiThread(() -> {
+                        buttonUpdateCfPool.setEnabled(true);
+                        buttonUpdateCfPool.setText(R.string.cf_pool_update_btn);
+                        updateCfPoolUi();
+                        if (success) {
+                            Toast.makeText(MainActivity.this,
+                                    getString(R.string.toast_cf_pool_done, CfIpPool.slotDisplayName(slot), poolSize),
+                                    Toast.LENGTH_LONG).show();
+                            // 池子刚更新完，立刻用新池跑一次优选，让效果马上生效
+                            if (prefs.getCfOptEnabled() && !CfOptimizer.isOptimizing()) {
+                                CfOptimizer.startOptimize(MainActivity.this, true);
+                            }
+                        } else {
+                            Toast.makeText(MainActivity.this,
+                                    getString(R.string.toast_cf_pool_failed, message),
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+            });
+        });
+        updateCfPoolUi();
+    }
+
+    /**
+     * 卡槽识别需要 READ_PHONE_STATE 才能拿到 simSlotIndex（区分卡槽1 / 卡槽2）。
+     * 未授权时 CfIpPool 有稳定兜底方案，功能不受影响，只是分区标签可能不够精确。
+     */
+    private void requestPhoneStatePermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+        try {
+            if (checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE)
+                    == PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
+            requestPermissions(new String[]{android.Manifest.permission.READ_PHONE_STATE}, 1201);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void updateCfPoolUi() {        if (textCfPoolNetwork == null) return;
+        try {
+            String current = CfIpPool.detectSlot(this);
+            textCfPoolNetwork.setText(getString(R.string.cf_pool_current_net, CfIpPool.slotLabel(this, current)));
+            textCfPoolWifi.setText(buildPoolLine(CfIpPool.SLOT_WIFI, R.string.cf_pool_line_wifi));
+            textCfPoolSim1.setText(buildPoolLine(CfIpPool.SLOT_SIM1, R.string.cf_pool_line_sim1));
+            textCfPoolSim2.setText(buildPoolLine(CfIpPool.SLOT_SIM2, R.string.cf_pool_line_sim2));
+        } catch (Throwable t) {
+            android.util.Log.w("MainActivity", "刷新 IP 池状态失败: " + t.getMessage());
+        }
+    }
+
+    private String buildPoolLine(String slot, int labelRes) {
+        int size = CfIpPool.poolSize(prefs, slot);
+        if (size <= 0) {
+            return getString(labelRes, getString(R.string.cf_pool_never));
+        }
+        String time = prefs.getCfPoolTime(slot);
+        String tail = (time == null || time.isEmpty()) ? (size + " 个") : (size + " 个 · " + time);
+        return getString(labelRes, tail);
+    }
+
     private void setupCfOptimizerUi() {
         switchCfOptEnable.setChecked(prefs.getCfOptEnabled());
         switchCfOptEnable.setOnCheckedChangeListener((buttonView, isChecked) -> {
@@ -634,6 +741,9 @@ public class MainActivity extends AppCompatActivity {
             textCfOptSummary.setVisibility(View.VISIBLE);
             textCfOptSummary.setText("⚡ " + summary);
         }
+
+        // 顺带刷新三分区 IP 池状态（当前网络可能在页面停留期间发生了变化）
+        updateCfPoolUi();
     }
 
     private int parseConnInput() {

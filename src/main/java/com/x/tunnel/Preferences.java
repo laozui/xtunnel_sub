@@ -62,6 +62,12 @@ public class Preferences
         public static final String CF_OPT_TOP_IPS = "CfOptTopIps";
         public static final String CF_OPT_SUMMARY = "CfOptSummary";
 
+        /* 本地可用 IP 池（按网络分区：wifi / sim1 / sim2，每池上限 50） */
+        public static final String CF_POOL_PREFIX = "CfPool_";
+        public static final String CF_POOL_TIME_PREFIX = "CfPoolTime_";
+        public static final String CF_POOL_DATE_PREFIX = "CfPoolDate_";
+        public static final int CF_POOL_CAPACITY = 50;
+
         private SharedPreferences prefs;
         private String currentProfileId;
 
@@ -564,6 +570,40 @@ public class Preferences
         public void setCfOptSummary(String summary) {
                 SharedPreferences.Editor editor = prefs.edit();
                 editor.putString(CF_OPT_SUMMARY, summary);
+                editor.commit();
+        }
+
+        // ================= 本地可用 IP 池（三网络分区） =================
+        /** 读取某个网络分区的 IP 池（逗号分隔，按优先级从前到后）。 */
+        public String getCfPool(String slot) {
+                return prefs.getString(CF_POOL_PREFIX + slot, "");
+        }
+
+        public void setCfPool(String slot, String ipsCsv) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putString(CF_POOL_PREFIX + slot, ipsCsv);
+                editor.commit();
+        }
+
+        /** 某分区的 IP 池最近一次更新时间（展示用）。 */
+        public String getCfPoolTime(String slot) {
+                return prefs.getString(CF_POOL_TIME_PREFIX + slot, "");
+        }
+
+        public void setCfPoolTime(String slot, String timeStr) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putString(CF_POOL_TIME_PREFIX + slot, timeStr);
+                editor.commit();
+        }
+
+        /** 某分区最近一次更新日期（yyyy-MM-dd），用于「每天首次启动自动更新」判定。 */
+        public String getCfPoolDate(String slot) {
+                return prefs.getString(CF_POOL_DATE_PREFIX + slot, "");
+        }
+
+        public void setCfPoolDate(String slot, String dateStr) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putString(CF_POOL_DATE_PREFIX + slot, dateStr);
                 editor.commit();
         }
 

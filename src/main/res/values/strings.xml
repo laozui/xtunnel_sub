@@ -133,7 +133,7 @@
 
         <!-- Local Cloudflare Dynamic Optimizer (自适应事件驱动版) -->
         <string name="cf_opt_card_title">本地智能优选 IP (免外网依赖)</string>
-        <string name="cf_opt_card_desc">基于内置高质种子池，启动及切网(WiFi/5G)自动优选 Top 3 黄金节点</string>
+        <string name="cf_opt_card_desc">从本地可用 IP 池中并发打分，启动及切网(WiFi/卡槽1/卡槽2)自动优选 Top N 黄金 IP</string>
         <string name="cf_opt_enable">启用本地智能优选</string>
         <string name="cf_opt_interval_label">自适应模式：</string>
         <string name="cf_opt_scope_label">生效范围：</string>
@@ -143,10 +143,24 @@
         <string name="cf_opt_status_running">⚡ 测速打分中…</string>
         <string name="cf_opt_last_time">上次优选：%1$s</string>
         <string name="cf_opt_never_run">上次优选：尚未执行</string>
-        <string name="cf_opt_top_ips_title">当前最优 Top 3 黄金 IP：</string>
+        <string name="cf_opt_top_ips_title">当前最优黄金 IP (数量 = 节点并发数)：</string>
         <string name="cf_opt_top_ips_none">暂无，请点击立即优选</string>
         <string name="toast_cf_opt_started">已开始在本地网络环境执行动态优选打分…</string>
-        <string name="toast_cf_opt_done">本地优选完成，Top 3 黄金 IP 榜单已生效！</string>
+        <string name="toast_cf_opt_done">本地优选完成，黄金 IP 榜单已生效！</string>
+
+        <!-- 本地可用 IP 池（三网络分区） -->
+        <string name="cf_pool_card_title">本地可用 IP 池</string>
+        <string name="cf_pool_card_desc">按网络分区独立维护：WiFi / 卡槽1 / 卡槽2 各自 50 个，优选时合并打分</string>
+        <string name="cf_pool_current_net">当前网络：%1$s</string>
+        <string name="cf_pool_line_wifi">WiFi 池：%1$s</string>
+        <string name="cf_pool_line_sim1">卡槽1 池：%1$s</string>
+        <string name="cf_pool_line_sim2">卡槽2 池：%1$s</string>
+        <string name="cf_pool_never">未更新</string>
+        <string name="cf_pool_update_btn">🔄 更新当前网络 IP 池</string>
+        <string name="cf_pool_updating">⏳ 正在扫描当前网络可用 IP…</string>
+        <string name="toast_cf_pool_started">已开始扫描当前网络下的可用 IP，请稍候…</string>
+        <string name="toast_cf_pool_done">IP 池已更新：%1$s 共 %2$d 个可用 IP</string>
+        <string name="toast_cf_pool_failed">IP 池更新失败：%1$s</string>
 
         <string-array name="cf_opt_interval_entries">
                 <item>自适应模式 (推荐)</item>

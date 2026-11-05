@@ -40,11 +40,27 @@ var cfg = GlobalConfig{
 	DialTimeout:        3 * time.Second,
 	WSHandshakeTimeout: 5 * time.Second,
 	ReconnectDelay:     1 * time.Second,
-	RTTProbeTimeout:    2 * time.Second,
+	RTTProbeTimeout:    4 * time.Second, // 放宽至4秒，减轻并发探针风暴与大流量误判
 	ReadBuf:            64 * 1024,
 }
 
 var bufPool = sync.Pool{New: func() any { b := make([]byte, 64*1024); return &b }}
+
+// getSmuxConfig 返回调优后的高性能 smux 配置。
+// 针对移动网络与跨国 Cloudflare 长延迟链路进行 BDP 吞吐优化：
+// 1. MaxStreamBuffer 扩充至 512KB（原默认 64KB），打破 100ms 延迟下 5Mbps 吞吐上限；
+// 2. MaxReceiveBuffer 扩充至 16MB（原默认 4MB），多流并发不再互相锁死；
+// 3. KeepAlive 适度放宽至 15s/45s，免疫移动网络切网/偶发抖动引发的断线。
+func getSmuxConfig() *smux.Config {
+	sc := smux.DefaultConfig()
+	sc.Version = 1 // 保持 version 1 以严格兼容现有节点
+	sc.MaxFrameSize = 32768
+	sc.MaxReceiveBuffer = 16 * 1024 * 1024
+	sc.MaxStreamBuffer = 512 * 1024
+	sc.KeepAliveInterval = 15 * time.Second
+	sc.KeepAliveTimeout = 45 * time.Second
+	return sc
+}
 
 // ======================== 全局参数 ========================
 
@@ -778,10 +794,11 @@ type ECHPool struct {
 	targetIPs     []string
 	clientID      string
 
-	wsConnsMu     sync.RWMutex
-	smuxConns     []*smux.Session
-	channelRTT    []int64
-	selectCounter uint64
+	wsConnsMu       sync.RWMutex
+	smuxConns       []*smux.Session
+	channelRTT      []int64
+	channelErrCount []int32
+	selectCounter   uint64
 }
 
 func NewECHPool(addr string, n int, ips []string, clientID string) *ECHPool {
@@ -791,14 +808,15 @@ func NewECHPool(addr string, n int, ips []string, clientID string) *ECHPool {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ECHPool{
-		ctx:           ctx,
-		cancel:        cancel,
-		wsServerAddr:  addr,
-		connectionNum: n,
-		targetIPs:     ips,
-		clientID:      clientID,
-		smuxConns:     make([]*smux.Session, total),
-		channelRTT:    make([]int64, total),
+		ctx:             ctx,
+		cancel:          cancel,
+		wsServerAddr:    addr,
+		connectionNum:   n,
+		targetIPs:       ips,
+		clientID:        clientID,
+		smuxConns:       make([]*smux.Session, total),
+		channelRTT:      make([]int64, total),
+		channelErrCount: make([]int32, total),
 	}
 }
 
@@ -854,7 +872,7 @@ func (p *ECHPool) dialAndServe(idx int, ip string) {
 			continue
 		}
 		wsNet := newWSNetConn(wsConn)
-		sess, err := smux.Client(wsNet, nil)
+		sess, err := smux.Client(wsNet, getSmuxConfig())
 		if err != nil {
 			_ = wsConn.Close()
 			log.Printf("[客户端] 通道 %d (IP:%s) smux 初始化失败: %v", chID, ipLabel, err)
@@ -868,6 +886,7 @@ func (p *ECHPool) dialAndServe(idx int, ip string) {
 		p.wsConnsMu.Lock()
 		p.smuxConns[idx] = sess
 		p.channelRTT[idx] = 0
+		p.channelErrCount[idx] = 0
 		p.wsConnsMu.Unlock()
 		log.Printf("[客户端] 通道 %d (IP:%s) 就绪 (smux)", chID, ipLabel)
 		if rtt, err := p.probeChannelRTTOnce(sess, cfg.RTTProbeTimeout); err == nil {
@@ -899,6 +918,7 @@ func (p *ECHPool) dialAndServe(idx int, ip string) {
 		p.wsConnsMu.Lock()
 		p.smuxConns[idx] = nil
 		p.channelRTT[idx] = 0
+		p.channelErrCount[idx] = 0
 		p.wsConnsMu.Unlock()
 		if probeErr != nil {
 			log.Printf("[客户端] 通道 %d 断开原因: %v", chID, probeErr)
@@ -923,7 +943,13 @@ func (p *ECHPool) probeChannelRTT(sess *smux.Session, idx int, done chan error) 
 	for {
 		rtt, err := p.probeChannelRTTOnce(sess, cfg.RTTProbeTimeout)
 		if err != nil {
-			atomic.StoreInt64(&p.channelRTT[idx], int64(cfg.RTTProbeTimeout.Nanoseconds()))
+			cur := atomic.LoadInt64(&p.channelRTT[idx])
+			penalty := int64(cfg.RTTProbeTimeout.Nanoseconds())
+			if cur > 0 && cur < penalty {
+				atomic.StoreInt64(&p.channelRTT[idx], (cur*2+penalty)/3)
+			} else {
+				atomic.StoreInt64(&p.channelRTT[idx], penalty)
+			}
 			if sess.IsClosed() {
 				exitErr = err
 				return
@@ -931,7 +957,17 @@ func (p *ECHPool) probeChannelRTT(sess *smux.Session, idx int, done chan error) 
 			<-ticker.C
 			continue
 		}
-		atomic.StoreInt64(&p.channelRTT[idx], rtt)
+		// EWMA 平滑 RTT (60% 历史 + 40% 瞬时)
+		oldRTT := atomic.LoadInt64(&p.channelRTT[idx])
+		if oldRTT <= 0 {
+			atomic.StoreInt64(&p.channelRTT[idx], rtt)
+		} else {
+			smoothed := int64(float64(oldRTT)*0.6 + float64(rtt)*0.4)
+			atomic.StoreInt64(&p.channelRTT[idx], smoothed)
+		}
+		if idx >= 0 && idx < len(p.channelErrCount) {
+			atomic.StoreInt32(&p.channelErrCount[idx], 0)
+		}
 		<-ticker.C
 	}
 }
@@ -962,11 +998,18 @@ func (p *ECHPool) probeChannelRTTOnce(sess *smux.Session, timeout time.Duration)
 	return time.Since(start).Nanoseconds(), nil
 }
 
+func (p *ECHPool) penalizeChannel(idx int) {
+	if idx >= 0 && idx < len(p.channelErrCount) {
+		atomic.AddInt32(&p.channelErrCount[idx], 1)
+	}
+}
+
 func (p *ECHPool) openBestStream() (*smux.Stream, int, int, error) {
 	p.wsConnsMu.RLock()
 	type candidate struct {
-		idx int
-		rtt int64
+		idx   int
+		score int64
+		rtt   int64
 	}
 	cands := make([]candidate, 0, len(p.smuxConns))
 	for i, sess := range p.smuxConns {
@@ -977,22 +1020,27 @@ func (p *ECHPool) openBestStream() (*smux.Stream, int, int, error) {
 		if rtt <= 0 {
 			rtt = int64(cfg.RTTProbeTimeout.Nanoseconds())
 		}
-		cands = append(cands, candidate{idx: i, rtt: rtt})
+		errCnt := atomic.LoadInt32(&p.channelErrCount[i])
+		score := rtt + int64(errCnt)*int64(350*time.Millisecond)
+		cands = append(cands, candidate{idx: i, score: score, rtt: rtt})
 	}
 	p.wsConnsMu.RUnlock()
 	if len(cands) == 0 {
 		return nil, 0, 0, fmt.Errorf("无可用 smux 通道")
 	}
-	minRTT := cands[0].rtt
+	minScore := cands[0].score
 	for _, c := range cands[1:] {
-		if c.rtt < minRTT {
-			minRTT = c.rtt
+		if c.score < minScore {
+			minScore = c.score
 		}
 	}
-	tieWindow := int64((10 * time.Millisecond).Nanoseconds())
+	tieWindow := int64(float64(minScore) * 0.35)
+	if tieWindow < int64(25*time.Millisecond) {
+		tieWindow = int64(25 * time.Millisecond)
+	}
 	near := make([]candidate, 0, len(cands))
 	for _, c := range cands {
-		if c.rtt <= minRTT+tieWindow {
+		if c.score <= minScore+tieWindow {
 			near = append(near, c)
 		}
 	}
@@ -1000,16 +1048,17 @@ func (p *ECHPool) openBestStream() (*smux.Stream, int, int, error) {
 	best := near[pick]
 	p.wsConnsMu.RLock()
 	sess := p.smuxConns[best.idx]
+	p.wsConnsMu.RUnlock()
 	if sess == nil || sess.IsClosed() {
-		p.wsConnsMu.RUnlock()
+		p.penalizeChannel(best.idx)
 		return nil, 0, 0, fmt.Errorf("通道不可用")
 	}
+	decision := best.idx + 1
 	s, err := sess.OpenStream()
-	p.wsConnsMu.RUnlock()
 	if err != nil {
+		p.penalizeChannel(best.idx)
 		return nil, 0, 0, err
 	}
-	decision := best.idx + 1
 	return s, best.idx + 1, decision, nil
 }
 
@@ -1032,27 +1081,41 @@ func writeSmuxOpenHeader(w io.Writer, kind byte, strategy byte, target string) e
 }
 
 func (p *ECHPool) openTCPStream(target string) (*smux.Stream, int, int, error) {
-	s, chID, decision, err := p.openBestStream()
-	if err != nil {
-		return nil, 0, 0, err
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		s, chID, decision, err := p.openBestStream()
+		if err != nil {
+			lastErr = err
+			break
+		}
+		if err := writeSmuxOpenHeader(s, streamKindTCP, ipStrategy, target); err != nil {
+			_ = s.Close()
+			p.penalizeChannel(decision - 1)
+			lastErr = err
+			continue
+		}
+		return s, chID, decision, nil
 	}
-	if err := writeSmuxOpenHeader(s, streamKindTCP, ipStrategy, target); err != nil {
-		_ = s.Close()
-		return nil, 0, 0, err
-	}
-	return s, chID, decision, nil
+	return nil, 0, 0, lastErr
 }
 
 func (p *ECHPool) openUDPStream(target string) (*smux.Stream, int, int, error) {
-	s, chID, decision, err := p.openBestStream()
-	if err != nil {
-		return nil, 0, 0, err
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		s, chID, decision, err := p.openBestStream()
+		if err != nil {
+			lastErr = err
+			break
+		}
+		if err := writeSmuxOpenHeader(s, streamKindUDP, ipStrategy, target); err != nil {
+			_ = s.Close()
+			p.penalizeChannel(decision - 1)
+			lastErr = err
+			continue
+		}
+		return s, chID, decision, nil
 	}
-	if err := writeSmuxOpenHeader(s, streamKindUDP, ipStrategy, target); err != nil {
-		_ = s.Close()
-		return nil, 0, 0, err
-	}
-	return s, chID, decision, nil
+	return nil, 0, 0, lastErr
 }
 
 // ======================== 分块读写 ========================
@@ -1167,10 +1230,33 @@ func dialWebSocketWithECH(addr string, retries int, ip string, clientID string, 
 		if ip != "" {
 			dialer.NetDial = func(network, address string) (net.Conn, error) {
 				_, port, _ := net.SplitHostPort(address)
-				if host, p, err := net.SplitHostPort(ip); err == nil {
-					return net.DialTimeout(network, net.JoinHostPort(host, p), cfg.DialTimeout)
+				var conn net.Conn
+				var err error
+				if host, p, e := net.SplitHostPort(ip); e == nil {
+					conn, err = net.DialTimeout(network, net.JoinHostPort(host, p), cfg.DialTimeout)
+				} else {
+					conn, err = net.DialTimeout(network, net.JoinHostPort(ip, port), cfg.DialTimeout)
 				}
-				return net.DialTimeout(network, net.JoinHostPort(ip, port), cfg.DialTimeout)
+				if err == nil {
+					if tc, ok := conn.(*net.TCPConn); ok {
+						_ = tc.SetNoDelay(true)
+						_ = tc.SetKeepAlive(true)
+						_ = tc.SetKeepAlivePeriod(30 * time.Second)
+					}
+				}
+				return conn, err
+			}
+		} else {
+			dialer.NetDial = func(network, address string) (net.Conn, error) {
+				conn, err := net.DialTimeout(network, address, cfg.DialTimeout)
+				if err == nil {
+					if tc, ok := conn.(*net.TCPConn); ok {
+						_ = tc.SetNoDelay(true)
+						_ = tc.SetKeepAlive(true)
+						_ = tc.SetKeepAlivePeriod(30 * time.Second)
+					}
+				}
+				return conn, err
 			}
 		}
 		return dialer
@@ -1244,20 +1330,39 @@ func logClientConnEvent(c net.Conn, reqType, target string, chID int, opened boo
 	log.Printf("[客户端] %s %s %s %s 通道 %d", clientSourceAddr(c), reqType, arrow, target, chID)
 }
 
+type closeWriter interface {
+	CloseWrite() error
+}
+
 func proxyConnStream(c net.Conn, stream *smux.Stream) {
 	done := make(chan struct{}, 2)
 	go func() {
-		_, _ = io.Copy(stream, c)
+		bufPtr := bufPool.Get().(*[]byte)
+		defer bufPool.Put(bufPtr)
+		_, _ = io.CopyBuffer(stream, c, *bufPtr)
+		// 客户端请求上传完成，优雅半关闭流写方向（发送 FIN 帧），保留对端回传通道
+		_ = stream.CloseWrite()
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = io.Copy(c, stream)
+		bufPtr := bufPool.Get().(*[]byte)
+		defer bufPool.Put(bufPtr)
+		_, _ = io.CopyBuffer(c, stream, *bufPtr)
+		if cw, ok := c.(closeWriter); ok {
+			_ = cw.CloseWrite()
+		}
 		done <- struct{}{}
 	}()
 	<-done
+
+	// 给接收侧最多 3 秒宽限期（若服务端还在回传响应数据，绝不立刻暴力腰斩）
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+	}
+
 	_ = stream.Close()
 	_ = c.Close()
-	<-done
 }
 
 // ======================== SOCKS5 客户端代理 ========================
@@ -1313,13 +1418,16 @@ func runSOCKS5Listener(addr string) {
 		if err != nil {
 			continue
 		}
+		if tc, ok := c.(*net.TCPConn); ok {
+			_ = tc.SetNoDelay(true)
+		}
 		go handleSOCKS5(c, cfgp)
 	}
 }
 
 func handleSOCKS5(c net.Conn, cfgp *ProxyConfig) {
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(cfg.DialTimeout))
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 2)
 	if _, err := io.ReadFull(c, buf); err != nil || buf[0] != 0x05 {
 		return

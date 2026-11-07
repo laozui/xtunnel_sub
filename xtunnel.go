@@ -40,25 +40,27 @@ var cfg = GlobalConfig{
 	DialTimeout:        3 * time.Second,
 	WSHandshakeTimeout: 5 * time.Second,
 	ReconnectDelay:     1 * time.Second,
-	RTTProbeTimeout:    4 * time.Second, // 放宽至4秒，减轻并发探针风暴与大流量误判
+	RTTProbeTimeout:    3 * time.Second, // 3秒探测周期
 	ReadBuf:            64 * 1024,
 }
 
 var bufPool = sync.Pool{New: func() any { b := make([]byte, 64*1024); return &b }}
 
 // getSmuxConfig 返回调优后的高性能 smux 配置。
-// 针对移动网络与跨国 Cloudflare 长延迟链路进行 BDP 吞吐优化：
-// 1. MaxStreamBuffer 扩充至 512KB（原默认 64KB），打破 100ms 延迟下 5Mbps 吞吐上限；
-// 2. MaxReceiveBuffer 扩充至 16MB（原默认 4MB），多流并发不再互相锁死；
-// 3. KeepAlive 适度放宽至 15s/45s，免疫移动网络切网/偶发抖动引发的断线。
+// 针对移动蜂窝网络（如中国移动激进的 25s NAT 老化）与 YouTube 长音频缓冲进行深度加固：
+// 1. MaxStreamBuffer 扩充至 512KB，打破 100ms 延迟下 5Mbps 吞吐上限；
+// 2. MaxReceiveBuffer 扩充至 16MB，多流并发不再互相锁死；
+// 3. KeepAliveInterval 收紧至 8s，KeepAliveTimeout 紧缩至 20s：
+//    在移动基站防火墙 25s 超时掐断前，每 8s 发送一次活跃心跳强力冲刷 NAT 表项；
+//    若遇基站无通知静默丢包，最多 20s 彻底宣告死亡就地重建，彻底终结长达 45s 的僵死期。
 func getSmuxConfig() *smux.Config {
 	sc := smux.DefaultConfig()
 	sc.Version = 1 // 保持 version 1 以严格兼容现有节点
 	sc.MaxFrameSize = 32768
 	sc.MaxReceiveBuffer = 16 * 1024 * 1024
 	sc.MaxStreamBuffer = 512 * 1024
-	sc.KeepAliveInterval = 15 * time.Second
-	sc.KeepAliveTimeout = 45 * time.Second
+	sc.KeepAliveInterval = 8 * time.Second
+	sc.KeepAliveTimeout = 20 * time.Second
 	return sc
 }
 
@@ -943,14 +945,15 @@ func (p *ECHPool) probeChannelRTT(sess *smux.Session, idx int, done chan error) 
 	for {
 		rtt, err := p.probeChannelRTTOnce(sess, cfg.RTTProbeTimeout)
 		if err != nil {
-			cur := atomic.LoadInt64(&p.channelRTT[idx])
-			penalty := int64(cfg.RTTProbeTimeout.Nanoseconds())
-			if cur > 0 && cur < penalty {
-				atomic.StoreInt64(&p.channelRTT[idx], (cur*2+penalty)/3)
-			} else {
-				atomic.StoreInt64(&p.channelRTT[idx], penalty)
-			}
-			if sess.IsClosed() {
+			errCnt := atomic.AddInt32(&p.channelErrCount[idx], 1)
+			atomic.StoreInt64(&p.channelRTT[idx], int64(cfg.RTTProbeTimeout.Nanoseconds()))
+
+			// ⚡ 移动网络“僵尸连接快速熔断”机制：
+			// 如果该通道连续 2 次探针严重超时（说明连接已经被移动基站黑洞丢弃），
+			// 绝不在池子里苟延残喘害人，直接主动关闭当前 session 触发立即就地重连！
+			if errCnt >= 2 || sess.IsClosed() {
+				log.Printf("[客户端] 通道 %d 连续探测失败/僵死，主动熔断重连", idx+1)
+				_ = sess.Close()
 				exitErr = err
 				return
 			}
@@ -1241,7 +1244,7 @@ func dialWebSocketWithECH(addr string, retries int, ip string, clientID string, 
 					if tc, ok := conn.(*net.TCPConn); ok {
 						_ = tc.SetNoDelay(true)
 						_ = tc.SetKeepAlive(true)
-						_ = tc.SetKeepAlivePeriod(30 * time.Second)
+						_ = tc.SetKeepAlivePeriod(10 * time.Second) // 10秒底层 TCP 心跳，保死 NAT 映射
 					}
 				}
 				return conn, err
@@ -1253,7 +1256,7 @@ func dialWebSocketWithECH(addr string, retries int, ip string, clientID string, 
 					if tc, ok := conn.(*net.TCPConn); ok {
 						_ = tc.SetNoDelay(true)
 						_ = tc.SetKeepAlive(true)
-						_ = tc.SetKeepAlivePeriod(30 * time.Second)
+						_ = tc.SetKeepAlivePeriod(10 * time.Second)
 					}
 				}
 				return conn, err
@@ -1336,23 +1339,65 @@ type closeWriter interface {
 
 func proxyConnStream(c net.Conn, stream *smux.Stream) {
 	done := make(chan struct{}, 2)
+	uploadDone := make(chan struct{}, 1)
+
+	// 方向 1: c -> stream (客户端上传请求)
 	go func() {
 		bufPtr := bufPool.Get().(*[]byte)
 		defer bufPool.Put(bufPtr)
 		_, _ = io.CopyBuffer(stream, c, *bufPtr)
 		// 客户端请求上传完成，优雅半关闭流写方向（发送 FIN 帧），保留对端回传通道
 		_ = stream.CloseWrite()
+		select {
+		case uploadDone <- struct{}{}:
+		default:
+		}
 		done <- struct{}{}
 	}()
+
+	// 方向 2: stream -> c (服务端回传响应，加入首字节看门狗保护)
 	go func() {
 		bufPtr := bufPool.Get().(*[]byte)
 		defer bufPool.Put(bufPtr)
-		_, _ = io.CopyBuffer(c, stream, *bufPtr)
+
+		// ⚡ 首字节超时熔断器（First-Byte Watchdog）：
+		// 针对 YouTube 分片下载特性：请求发出后，正常情况下几百毫秒内远端必回传首个数据块；
+		// 若因移动基站丢弃了该连接导致陷入黑洞，看门狗在 7 秒后主动熔断，避免死等 30 秒！
+		stopWatchdog := make(chan struct{}, 1)
+		go func() {
+			select {
+			case <-uploadDone:
+				select {
+				case <-time.After(7 * time.Second):
+					// 请求已发完但 7 秒仍无任何下行响应，强制掐断本流促使浏览器秒级重试
+					_ = stream.Close()
+					_ = c.Close()
+				case <-stopWatchdog:
+				}
+			case <-stopWatchdog:
+			}
+		}()
+
+		// 读取第一个数据包，成功收到则立刻停止看门狗
+		n, err := stream.Read(*bufPtr)
+		select {
+		case stopWatchdog <- struct{}{}:
+		default:
+		}
+
+		if err == nil && n > 0 {
+			if _, werr := c.Write((*bufPtr)[:n]); werr == nil {
+				// 后续正常大流量全速中继
+				_, _ = io.CopyBuffer(c, stream, *bufPtr)
+			}
+		}
+
 		if cw, ok := c.(closeWriter); ok {
 			_ = cw.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
+
 	<-done
 
 	// 给接收侧最多 3 秒宽限期（若服务端还在回传响应数据，绝不立刻暴力腰斩）

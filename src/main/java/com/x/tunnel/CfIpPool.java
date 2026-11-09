@@ -56,14 +56,14 @@ public class CfIpPool {
     public static final String SLOT_SIM2 = "sim2";
 
     /** 单分区容量上限 */
-    public static final int POOL_CAPACITY = 50;
+    public static final int POOL_CAPACITY = 500;
     /** 更新时保留旧池头部数量（稳定性锚点） */
-    private static final int KEEP_OLD = 10;
+    private static final int KEEP_OLD = 50;
     /** 期望新扫出的 IP 数量 */
     private static final int SCAN_TARGET_NEW = 40;
 
     /* 扫描参数：手机上兼顾速度与耗电，单次随机采样 1200 个子网 + 64 路并发 */
-    private static final int SCAN_MAX_SUBNETS = 1200;
+    private static final int SCAN_MAX_SUBNETS = 6534;
     private static final int SCAN_CONCURRENCY = 64;
     private static final int SCAN_TIMEOUT_MS = 700;
     private static final int PROBE_PORT = 443;
@@ -351,6 +351,15 @@ public class CfIpPool {
                     Network bindNet = getUnderlyingNetwork(appCtx);
                     List<IpLatency> alive = probeAll(candidates, total, bindNet, callback);
 
+                    /* 区域归类：只保留「从本机网络真实落地在 港/日/新/台/韩/美西」的入口。
+                       旧逻辑只看 TCP 握手延迟，实测会把池子填满美西 IP（港/日 0 个），
+                       而中国移动的国际出口恰恰港日方向最好。 */
+                    if (!alive.isEmpty()) {
+                        List<IpLatency> regional = classifyByColo(alive, callback);
+                        if (!regional.isEmpty()) alive = regional;
+                        else Log.w(TAG, "落地归类无结果，回退按延迟排序的原始候选");
+                    }
+
                     if (alive.isEmpty()) {
                         message = "未探测到可用 IP，请检查当前网络连通性";
                         Log.w(TAG, message);
@@ -443,6 +452,157 @@ public class CfIpPool {
         return new ArrayList<>(result);
     }
 
+    /* ======================= 落地 POP 归类（区域感知优选） =======================
+     * 用「TLS + /cdn-cgi/trace」问出候选 IP 从本机网络真实落地的 Cloudflare POP，
+     * 只保留 港/日/新/台/韩/美西（其余区域对国内就是绕路），每 /24 只留最快的一个，
+     * 最后按区域轮转交错 —— "取前 N 个"就天然带上区域多样性。
+     * 注：SNI 由 createSocket(socket, host, ...) 提供，兼容 minSdk 21。 */
+    private static final String PROBE_HOST = "jp2-xt.meetmeag.com";
+    private static final int COLO_TIMEOUT_MS = 2000;
+    private static final int COLO_MAX_CHECK = 320;
+    private static final int REGION_CAP = 100;
+
+    private static final java.util.Map<String, String> COLO_AREA = new java.util.HashMap<String, String>();
+    static {
+        COLO_AREA.put("HKG", "香港");
+        String[] jp = {"NRT", "KIX", "FUK", "OKA"};
+        for (String c : jp) COLO_AREA.put(c, "日本");
+        COLO_AREA.put("SIN", "新加坡");
+        COLO_AREA.put("TPE", "中国台湾");
+        String[] kr = {"ICN", "PUS"};
+        for (String c : kr) COLO_AREA.put(c, "韩国");
+        String[] us = {"LAX", "SJC", "SEA", "PDX", "SFO"};
+        for (String c : us) COLO_AREA.put(c, "美西");
+    }
+    private static final String[] AREA_ORDER = {"香港", "日本", "新加坡", "中国台湾", "韩国", "美西"};
+
+    /** 探测单个 IP 的落地 POP（失败返回 null） */
+    static String probeColo(String ip) {
+        javax.net.ssl.SSLSocket s = null;
+        java.net.Socket raw = null;
+        try {
+            raw = new java.net.Socket();
+            raw.connect(new java.net.InetSocketAddress(ip, 443), COLO_TIMEOUT_MS);
+            javax.net.ssl.SSLSocketFactory f =
+                    (javax.net.ssl.SSLSocketFactory) javax.net.ssl.SSLSocketFactory.getDefault();
+            s = (javax.net.ssl.SSLSocket) f.createSocket(raw, PROBE_HOST, 443, true);
+            s.setSoTimeout(COLO_TIMEOUT_MS);
+            s.startHandshake();
+            java.io.OutputStream os = s.getOutputStream();
+            String req = "GET /cdn-cgi/trace HTTP/1.1\r\nHost: " + PROBE_HOST
+                    + "\r\nUser-Agent: cfscan\r\nAccept: */*\r\nConnection: close\r\n\r\n";
+            os.write(req.getBytes("US-ASCII"));
+            os.flush();
+            s.setSoTimeout(1200);
+            java.io.InputStream is = s.getInputStream();
+            byte[] buf = new byte[512];
+            StringBuilder sb = new StringBuilder();
+            int n;
+            while (sb.length() < 4096 && (n = is.read(buf)) > 0) {
+                sb.append(new String(buf, 0, n, "US-ASCII"));
+            }
+            java.util.regex.Matcher m =
+                    java.util.regex.Pattern.compile("(?m)^colo=(\\S+)").matcher(sb);
+            return m.find() ? m.group(1) : null;
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            try { if (s != null) s.close(); } catch (Throwable ignored) { }
+            try { if (raw != null) raw.close(); } catch (Throwable ignored) { }
+        }
+    }
+
+    private static String cidr24(String ip) {
+        int i = ip.lastIndexOf('.');
+        return i > 0 ? ip.substring(0, i) : ip;
+    }
+
+    /** 对延迟最优的一批候选做落地归类，返回按区域轮转交错的列表 */
+    static List<IpLatency> classifyByColo(List<IpLatency> alive, final PoolCallback callback) {
+        int check = Math.min(COLO_MAX_CHECK, alive.size());
+        if (check <= 0) return new ArrayList<IpLatency>();
+        final List<IpLatency> head = new ArrayList<IpLatency>(alive.subList(0, check));
+        final java.util.Map<String, List<IpLatency>> byArea =
+                new java.util.concurrent.ConcurrentHashMap<String, List<IpLatency>>();
+        final java.util.Set<String> seenCidr =
+                java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+        ExecutorService pool = Executors.newFixedThreadPool(24);
+        final CountDownLatch latch = new CountDownLatch(head.size());
+        final java.util.concurrent.atomic.AtomicInteger done =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+        long t0 = System.currentTimeMillis();
+        for (final IpLatency it : head) {
+            pool.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        String colo = probeColo(it.ip);
+                        String area = (colo == null) ? null : COLO_AREA.get(colo);
+                        if (area != null && seenCidr.add(cidr24(it.ip))) {
+                            List<IpLatency> l = byArea.get(area);
+                            if (l == null) {
+                                l = java.util.Collections.synchronizedList(new ArrayList<IpLatency>());
+                                byArea.put(area, l);
+                            }
+                            l.add(it);
+                        }
+                    } catch (Throwable ignored) {
+                    } finally {
+                        int d = done.incrementAndGet();
+                        if (callback != null && (d % 20 == 0 || d == head.size())) {
+                            final int fd = d;
+                            mainHandler.post(new Runnable() {
+                                @Override public void run() {
+                                    callback.onProgress(fd, head.size(), "正在按落地区域归类...");
+                                }
+                            });
+                        }
+                        latch.countDown();
+                    }
+                }
+            });
+        }
+        try { latch.await(120, TimeUnit.SECONDS); } catch (Throwable ignored) { }
+        pool.shutdownNow();
+
+        java.util.Map<String, List<IpLatency>> capped = new java.util.HashMap<String, List<IpLatency>>();
+        for (String a : AREA_ORDER) {
+            List<IpLatency> l = byArea.get(a);
+            if (l == null || l.isEmpty()) continue;
+            List<IpLatency> copy;
+            synchronized (l) { copy = new ArrayList<IpLatency>(l); }
+            Collections.sort(copy, new Comparator<IpLatency>() {
+                @Override public int compare(IpLatency x, IpLatency y) {
+                    return Float.compare(x.latency, y.latency);
+                }
+            });
+            if (copy.size() > REGION_CAP) copy = new ArrayList<IpLatency>(copy.subList(0, REGION_CAP));
+            capped.put(a, copy);
+        }
+
+        List<IpLatency> out = new ArrayList<IpLatency>();
+        for (int i = 0; ; i++) {
+            boolean added = false;
+            for (String a : AREA_ORDER) {
+                List<IpLatency> l = capped.get(a);
+                if (l != null && i < l.size()) {
+                    out.add(l.get(i));
+                    added = true;
+                    if (out.size() >= POOL_CAPACITY) break;
+                }
+            }
+            if (!added || out.size() >= POOL_CAPACITY) break;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (String a : AREA_ORDER) {
+            List<IpLatency> l = capped.get(a);
+            sb.append(a).append(':').append(l == null ? 0 : l.size()).append(' ');
+        }
+        Log.i(TAG, "落地归类 " + check + " 个候选 -> 保留 " + out.size() + " 个 ["
+                + sb.toString().trim() + "] 耗时 " + (System.currentTimeMillis() - t0) + "ms");
+        return out;
+    }
+
     /* ======================= 探测实现 ======================= */
 
     static class IpLatency {
@@ -489,7 +649,7 @@ public class CfIpPool {
             }
             // 全量探测上限：最坏情况每轮 RTT 超时 × 轮数
             long waitMs = (long) Math.ceil((double) candidates.size() / threads) * (SCAN_TIMEOUT_MS + 120L) + 3000L;
-            latch.await(Math.min(waitMs, 90000L), TimeUnit.MILLISECONDS);
+            latch.await(Math.min(waitMs, 180000L), TimeUnit.MILLISECONDS);
         } catch (Throwable t) {
             Log.w(TAG, "探测中断: " + t.getMessage());
         } finally {

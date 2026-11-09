@@ -737,12 +737,21 @@ public class MainActivity extends AppCompatActivity {
             textCfOptTopIps.setText(R.string.cf_opt_top_ips_none);
         }
 
+        // 运营商 + 区域提示（决定段池去哪个区域取 IP），和性能摘要并排显示
+        String carrier = prefs.getWanCarrier();
         String summary = prefs.getCfOptSummary();
-        if (summary == null || summary.isEmpty()) {
+        StringBuilder optInfo = new StringBuilder();
+        if (carrier != null && !carrier.isEmpty()) {
+            optInfo.append("线路: ").append(CarrierDetect.summary(carrier)).append("  ");
+        }
+        if (summary != null && !summary.isEmpty()) {
+            optInfo.append("⚡ ").append(summary);
+        }
+        if (optInfo.length() == 0) {
             textCfOptSummary.setVisibility(View.GONE);
         } else {
             textCfOptSummary.setVisibility(View.VISIBLE);
-            textCfOptSummary.setText("⚡ " + summary);
+            textCfOptSummary.setText(optInfo.toString());
         }
 
         // 顺带刷新三分区 IP 池状态（当前网络可能在页面停留期间发生了变化）

@@ -246,23 +246,6 @@ public class CfOptimizer {
         final Preferences prefs = new Preferences(context);
         final long tStartMs = System.currentTimeMillis();   /* 全流程计时，便于验证提速效果 */
 
-        // 1. 准备候选池：优先使用【本地可用 IP 池（三分区合并）】
-        //    三分区 = WiFi 池 + 卡槽1 池 + 卡槽2 池，合并去重后最多 150 个，
-        //    全部是真实在本机网络环境下握手成功过的 IP，命中率远高于写死的种子库。
-        List<String> pool = new ArrayList<>();
-        List<String> localPool = CfIpPool.getMergedPool(context, prefs);
-        if (!localPool.isEmpty()) {
-            pool.addAll(localPool);
-            Log.i(TAG, "候选池来源: 本地 IP 池（三分区合并）共 " + pool.size() + " 个");
-        }
-        // 本地池为空（首次安装 / 从未更新过）时，退回内置种子库兜底，保证功能可用
-        if (pool.isEmpty()) {
-            for (String ip : BUILTIN_CF_IPS) {
-                if (!pool.contains(ip)) pool.add(ip);
-            }
-            Log.i(TAG, "候选池来源: 内置种子库（本地 IP 池为空，建议先在设置页更新一次 IP 池）共 " + pool.size() + " 个");
-        }
-
         // 目标数量 N = 当前节点的并发连接数（1~32，默认 3）
         final int targetN = Math.max(1, Math.min(32, prefs.getWsConn()));
         Log.i(TAG, "目标优选数量 N = " + targetN + "（取自当前节点并发连接数）");
@@ -270,6 +253,38 @@ public class CfOptimizer {
         /* VPN 在线时探测必须绑定底层网络，否则 socket 会落进 tun 隧道，
            测到的是隧道质量而不是本地宽带 → Cloudflare 的真实路径质量。 */
         final Network bindNet = CfIpPool.getUnderlyingNetwork(context);
+
+        // 1. 准备候选池：优先【段池实时优选】
+        //    段池每段只测 1 个代表 IP，2~5 秒就能按当前真实网络重排一次，
+        //    不存在「IP 池是几小时前的快照」这个问题。识别出的运营商会决定
+        //    去日本 NRT / 香港 HKG / 日港双区域里取。
+        List<String> pool = new ArrayList<>();
+        String slot = CfIpPool.detectSlot(context);
+        String[] carrierOut = new String[1];
+        int want = Math.max(12, targetN * 4);
+        List<String> picked = CfCidrLib.pickTop(context, slot, want, bindNet, carrierOut);
+        if (!picked.isEmpty()) {
+            pool.addAll(picked);
+            try {
+                prefs.setWanCarrier(carrierOut[0]);
+            } catch (Throwable ignored) { }
+            Log.i(TAG, "候选池来源: 段池实时优选（"
+                    + CarrierDetect.summary(carrierOut[0]) + "）共 " + pool.size() + " 个");
+        }
+        if (pool.isEmpty()) {
+            List<String> localPool = CfIpPool.getMergedPool(context, prefs);
+            if (!localPool.isEmpty()) {
+                pool.addAll(localPool);
+                Log.i(TAG, "候选池来源: 本地 IP 池（三分区合并）共 " + pool.size() + " 个");
+            }
+        }
+        // 本地池为空（首次安装 / 从未更新过 / 段库未生成）时，退回内置种子库兜底
+        if (pool.isEmpty()) {
+            for (String ip : BUILTIN_CF_IPS) {
+                if (!pool.contains(ip)) pool.add(ip);
+            }
+            Log.i(TAG, "候选池来源: 内置种子库（本地 IP 池为空，建议先在设置页更新一次 IP 池）共 " + pool.size() + " 个");
+        }
 
         // 2. 第一轮初筛：非阻塞并发快速探测
         Log.i(TAG, "候选池就绪: 共 " + pool.size() + " 个 IP，"

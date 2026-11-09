@@ -70,7 +70,7 @@ public class CfIpPool {
     private static final int SCAN_MAX_SUBNETS = 6534;
     private static final int SCAN_CONCURRENCY = 64;
     private static final int SCAN_TIMEOUT_MS = 700;
-    private static final int PROBE_PORT = 443;
+    static final int PROBE_PORT = 443;
 
     private static final String ASSET_SUBNETS = "cf_subnets.txt";
 
@@ -404,9 +404,13 @@ public class CfIpPool {
                         prefs.setCfPoolTime(slot, nowStr);
                         prefs.setCfPoolDate(slot, dateStr);
 
+                        // 6. 顺便重建段库：这一轮问出过 colo 的 /24 段全部纳入。
+                        //    之后每次优选只复测这些段的代表 IP，2~5 秒就能出新榜单。
+                        int libN = CfCidrLib.rebuildFromCache(appCtx, slot);
+
                         size = merged.size();
                         ok = true;
-                        message = "已更新 " + slotName + " IP 池，共 " + size + " 个可用 IP";
+                        message = "已更新 " + slotName + "：IP " + size + " 个 · 段库 " + libN + " 段";
                         Log.i(TAG, message + "（整池换新，旧池 " + oldPool.size() + " 个已废弃）");
                     }
 
@@ -530,11 +534,11 @@ public class CfIpPool {
      * 只保留 港/日/新/台/韩/美西（其余区域对国内就是绕路），每 /24 只留最快的一个，
      * 最后按区域轮转交错 —— "取前 N 个"就天然带上区域多样性。
      * 注：SNI 由 createSocket(socket, host, ...) 提供，兼容 minSdk 21。 */
-    private static final String PROBE_HOST = "jp2-xt.meetmeag.com";
-    private static final int COLO_TIMEOUT_MS = 2000;
+    static final String PROBE_HOST = "jp2-xt.meetmeag.com";
+    static final int COLO_TIMEOUT_MS = 2000;
     private static final int COLO_MAX_CHECK = 320;
 
-    private static final java.util.Map<String, String> COLO_AREA = new java.util.HashMap<String, String>();
+    static final java.util.Map<String, String> COLO_AREA = new java.util.HashMap<String, String>();
     static {
         COLO_AREA.put("HKG", "香港");
         String[] jp = {"NRT", "KIX", "FUK", "OKA"};
@@ -552,7 +556,7 @@ public class CfIpPool {
      * ★ 仅供界面展示查表用。任何情况下都不得把 colo 拼进连接参数——
      *   Windows 端曾把 "(NRT)" 拼进节点 IP，内核当域名解析，导致 25 条通道全挂。
      */
-    private static final java.util.Map<String, String> COLO_CACHE =
+    static final java.util.Map<String, String> COLO_CACHE =
             new java.util.concurrent.ConcurrentHashMap<String, String>();
 
     /** 查落地 POP：先查缓存，未命中现探一次并缓存（失败返回 null） */
@@ -597,6 +601,59 @@ public class CfIpPool {
     }
 
     /** 探测单个 IP 的落地 POP（失败返回 null） */
+    /**
+     * 段池优选专用：一次 TLS + /cdn-cgi/trace 同时拿到【落地区域】和【握手耗时】，
+     * 并绑定底层网络 —— VPN 在线时不绑就会测到隧道质量，整批结果全废。
+     */
+    static final class ColoProbe {
+        final String colo;
+        final float latencyMs;
+        ColoProbe(String colo, float latencyMs) {
+            this.colo = colo;
+            this.latencyMs = latencyMs;
+        }
+    }
+
+    static ColoProbe probeColoEx(String ip, Network bindNet) {
+        java.net.Socket raw = null;
+        javax.net.ssl.SSLSocket s = null;
+        try {
+            raw = (bindNet != null) ? bindNet.getSocketFactory().createSocket() : new java.net.Socket();
+            long t0 = System.nanoTime();
+            raw.connect(new java.net.InetSocketAddress(ip, PROBE_PORT), COLO_TIMEOUT_MS);
+            javax.net.ssl.SSLSocketFactory f =
+                    (javax.net.ssl.SSLSocketFactory) javax.net.ssl.SSLSocketFactory.getDefault();
+            s = (javax.net.ssl.SSLSocket) f.createSocket(raw, PROBE_HOST, 443, true);
+            s.setSoTimeout(COLO_TIMEOUT_MS);
+            s.startHandshake();
+            float lat = (System.nanoTime() - t0) / 1000000f;
+            java.io.OutputStream os = s.getOutputStream();
+            String req = "GET /cdn-cgi/trace HTTP/1.1\r\nHost: " + PROBE_HOST
+                    + "\r\nUser-Agent: cfscan\r\nAccept: */*\r\nConnection: close\r\n\r\n";
+            os.write(req.getBytes("US-ASCII"));
+            os.flush();
+            s.setSoTimeout(1200);
+            java.io.InputStream is = s.getInputStream();
+            byte[] buf = new byte[512];
+            StringBuilder sb = new StringBuilder();
+            int n;
+            while (sb.length() < 4096 && (n = is.read(buf)) > 0) {
+                sb.append(new String(buf, 0, n, "US-ASCII"));
+            }
+            java.util.regex.Matcher m =
+                    java.util.regex.Pattern.compile("(?m)^colo=(\\S+)").matcher(sb);
+            if (!m.find()) return null;
+            String colo = m.group(1);
+            COLO_CACHE.put(ip, colo);
+            return new ColoProbe(colo, lat);
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            try { if (s != null) s.close(); } catch (Throwable ignored) { }
+            try { if (raw != null) raw.close(); } catch (Throwable ignored) { }
+        }
+    }
+
     static String probeColo(String ip) {
         javax.net.ssl.SSLSocket s = null;
         java.net.Socket raw = null;

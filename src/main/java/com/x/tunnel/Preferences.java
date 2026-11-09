@@ -599,6 +599,17 @@ public class Preferences
                 editor.commit();
         }
 
+        /** 线路运营商（决定段池去哪个区域取 IP），仅供界面展示 */
+        public String getWanCarrier() {
+                return prefs.getString("WanCarrier", "");
+        }
+
+        public void setWanCarrier(String carrier) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putString("WanCarrier", carrier == null ? "" : carrier);
+                editor.commit();
+        }
+
         public String getCfOptSummary() {
                 return prefs.getString(CF_OPT_SUMMARY, "");
         }

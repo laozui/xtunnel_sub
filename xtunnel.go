@@ -204,7 +204,6 @@ func GetRecentLogs() string {
 	return strings.Join(diagLog[start:], "\n")
 }
 
-
 const (
 	IPStrategyDefault  byte = 0
 	IPStrategyIPv4Only byte = 1
@@ -309,6 +308,8 @@ func StartSocksProxy(host, wsServer string, n int, udpBlockPortsStr string, dns,
 	clientID = uuid.NewString()
 	echPool = NewECHPool(wsServer, connectionNum, targetIPs, clientID)
 	echPool.Start()
+	// 启动「入口吞吐优选」：实测各入口真实速率，让选路在延迟够快的前提下优先挑跑得动的入口
+	echPool.StartThroughputProbe()
 
 	l, err := net.Listen("tcp", host)
 	if err != nil {
@@ -800,7 +801,11 @@ type ECHPool struct {
 	smuxConns       []*smux.Session
 	channelRTT      []int64
 	channelErrCount []int32
+	channelDown     []int64 // 实测下行吞吐（字节/秒），0=未测到
+	channelUp       []int64 // 实测上行吞吐（字节/秒）
 	selectCounter   uint64
+	probeOnce       sync.Once
+	probeRounds     int64
 }
 
 func NewECHPool(addr string, n int, ips []string, clientID string) *ECHPool {
@@ -819,6 +824,8 @@ func NewECHPool(addr string, n int, ips []string, clientID string) *ECHPool {
 		smuxConns:       make([]*smux.Session, total),
 		channelRTT:      make([]int64, total),
 		channelErrCount: make([]int32, total),
+		channelDown:     make([]int64, total),
+		channelUp:       make([]int64, total),
 	}
 }
 
@@ -1011,10 +1018,13 @@ func (p *ECHPool) openBestStream() (*smux.Stream, int, int, error) {
 	p.wsConnsMu.RLock()
 	type candidate struct {
 		idx   int
-		score int64
+		tier  int
+		tp    int64
 		rtt   int64
+		score int64
 	}
 	cands := make([]candidate, 0, len(p.smuxConns))
+	hasThroughput := false
 	for i, sess := range p.smuxConns {
 		if sess == nil || sess.IsClosed() {
 			continue
@@ -1024,45 +1034,105 @@ func (p *ECHPool) openBestStream() (*smux.Stream, int, int, error) {
 			rtt = int64(cfg.RTTProbeTimeout.Nanoseconds())
 		}
 		errCnt := atomic.LoadInt32(&p.channelErrCount[i])
-		score := rtt + int64(errCnt)*int64(350*time.Millisecond)
-		cands = append(cands, candidate{idx: i, score: score, rtt: rtt})
+		tp := atomic.LoadInt64(&p.channelDown[i])
+		if tp > 0 {
+			hasThroughput = true
+		}
+		// 延迟决定"点开网页等多久"，先分档保证体感；吞吐决定"下载跑多快"，档内再比。
+		tier := rttTier(time.Duration(rtt))
+		if errCnt > 0 { // 故障惩罚：累计 N 次故障等效降 N 档
+			tier += int(errCnt)
+			if tier > 3 {
+				tier = 3
+			}
+		}
+		cands = append(cands, candidate{
+			idx: i, tier: tier, tp: tp, rtt: rtt,
+			score: rtt + int64(errCnt)*int64(350*time.Millisecond),
+		})
 	}
 	p.wsConnsMu.RUnlock()
 	if len(cands) == 0 {
 		return nil, 0, 0, fmt.Errorf("无可用 smux 通道")
 	}
-	minScore := cands[0].score
+
+	bestTier := cands[0].tier
 	for _, c := range cands[1:] {
-		if c.score < minScore {
-			minScore = c.score
+		if c.tier < bestTier {
+			bestTier = c.tier
 		}
 	}
-	tieWindow := int64(float64(minScore) * 0.35)
-	if tieWindow < int64(25*time.Millisecond) {
-		tieWindow = int64(25 * time.Millisecond)
-	}
-	near := make([]candidate, 0, len(cands))
+	group := make([]candidate, 0, len(cands))
 	for _, c := range cands {
-		if c.score <= minScore+tieWindow {
-			near = append(near, c)
+		if c.tier == bestTier {
+			group = append(group, c)
 		}
 	}
-	pick := int(atomic.AddUint64(&p.selectCounter, 1)-1) % len(near)
-	best := near[pick]
-	p.wsConnsMu.RLock()
-	sess := p.smuxConns[best.idx]
-	p.wsConnsMu.RUnlock()
-	if sess == nil || sess.IsClosed() {
-		p.penalizeChannel(best.idx)
-		return nil, 0, 0, fmt.Errorf("通道不可用")
+
+	if hasThroughput {
+		var maxTP int64
+		for _, c := range group {
+			if c.tp > maxTP {
+				maxTP = c.tp
+			}
+		}
+		if maxTP > 0 {
+			thr := int64(float64(maxTP) * 0.7)
+			if thr < 64*1024 {
+				thr = 64 * 1024
+			}
+			fast := make([]candidate, 0, len(group))
+			for _, c := range group {
+				if c.tp >= thr {
+					fast = append(fast, c)
+				}
+			}
+			if len(fast) > 0 {
+				group = fast
+			}
+		}
+	} else {
+		// 无吞吐数据（老服务端或探测失败）：退回原来的纯延迟 + 容差窗口行为
+		minScore := group[0].score
+		for _, c := range group[1:] {
+			if c.score < minScore {
+				minScore = c.score
+			}
+		}
+		tieWindow := int64(float64(minScore) * 0.35)
+		if tieWindow < int64(25*time.Millisecond) {
+			tieWindow = int64(25 * time.Millisecond)
+		}
+		near := make([]candidate, 0, len(group))
+		for _, c := range group {
+			if c.score <= minScore+tieWindow {
+				near = append(near, c)
+			}
+		}
+		if len(near) > 0 {
+			group = near
+		}
 	}
-	decision := best.idx + 1
-	s, err := sess.OpenStream()
-	if err != nil {
-		p.penalizeChannel(best.idx)
-		return nil, 0, 0, err
+
+	pick := int(atomic.AddUint64(&p.selectCounter, 1)-1) % len(group)
+	// 逐条尝试：开流失败立刻换下一条（提升鲁棒性）
+	for attempt := 0; attempt < len(group); attempt++ {
+		c := group[(pick+attempt)%len(group)]
+		p.wsConnsMu.RLock()
+		sess := p.smuxConns[c.idx]
+		p.wsConnsMu.RUnlock()
+		if sess == nil || sess.IsClosed() {
+			p.penalizeChannel(c.idx)
+			continue
+		}
+		s, err := sess.OpenStream()
+		if err != nil {
+			p.penalizeChannel(c.idx)
+			continue
+		}
+		return s, c.idx + 1, c.idx + 1, nil
 	}
-	return s, best.idx + 1, decision, nil
+	return nil, 0, 0, fmt.Errorf("通道不可用")
 }
 
 func writeSmuxOpenHeader(w io.Writer, kind byte, strategy byte, target string) error {

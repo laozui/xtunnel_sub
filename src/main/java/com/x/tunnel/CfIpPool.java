@@ -56,11 +56,15 @@ public class CfIpPool {
     public static final String SLOT_SIM2 = "sim2";
 
     /** 单分区容量上限 */
-    public static final int POOL_CAPACITY = 500;
-    /** 更新时保留旧池头部数量（稳定性锚点） */
-    private static final int KEEP_OLD = 50;
+    public static final int POOL_CAPACITY = 200;
     /** 期望新扫出的 IP 数量 */
     private static final int SCAN_TARGET_NEW = 40;
+
+    /* 深挖补足：三地扫不满 200 时，从最快的若干个 /24 段里再抽 IP 实测补齐。
+       经验依据：排名靠前的 /24 段整体质量都不错（实测 172.64.53.x 全部落地 NRT），
+       只是在"每 /24 只留 1 个"的规则下被浪费了。 */
+    private static final int FILL_CIDR_COUNT = 5;
+    private static final int FILL_PER_CIDR = 40;
 
     /* 扫描参数：手机上兼顾速度与耗电，单次随机采样 1200 个子网 + 64 路并发 */
     private static final int SCAN_MAX_SUBNETS = 6534;
@@ -244,6 +248,21 @@ public class CfIpPool {
         return "";
     }
 
+    /* ======================= 目标落地区域 =======================
+       只收这三个区域：日本(NRT/KIX/FUK/OKA)、香港(HKG)、新加坡(SIN)。
+       WiFi / 卡槽1 / 卡槽2 三个池子用同一套规则，不按运营商做差异化——
+       少一层判断就少一类坑，实测效果也没必要细分。 */
+
+    private static final String[] TARGET_AREAS = {"日本", "香港", "新加坡"};
+
+    private static boolean isTargetArea(String area) {
+        if (area == null) return false;
+        for (String t : TARGET_AREAS) {
+            if (t.equals(area)) return true;
+        }
+        return false;
+    }
+
     public static String slotDisplayName(String slot) {
         if (SLOT_WIFI.equals(slot)) return "WiFi";
         if (SLOT_SIM2.equals(slot)) return "卡槽2";
@@ -338,34 +357,46 @@ public class CfIpPool {
                     List<String> oldPool = parseCsv(prefs.getCfPool(slot));
                     Log.i(TAG, "开始更新 " + slotName + " IP 池（旧池 " + oldPool.size() + " 个）");
 
-                    // 1. 准备候选：旧池全部 + 随机采样自网点
-                    List<String> candidates = new ArrayList<>(oldPool);
+                    // 1. 候选只用子网库随机采样，不掺旧池：区域策略已收敛到 日/港/新，
+                    //    旧池里可能混着已排除的区域，带进来只会污染池子。
+                    List<String> candidates = new ArrayList<>();
                     List<String> sampled = sampleSubnetIps(appCtx, SCAN_MAX_SUBNETS);
                     for (String ip : sampled) {
                         if (!candidates.contains(ip)) candidates.add(ip);
                     }
                     final int total = candidates.size();
-                    Log.i(TAG, "候选 " + total + " 个（含旧池 " + oldPool.size() + " 个）");
+                    Log.i(TAG, "候选 " + total + " 个（目标区域：日本/香港/新加坡）");
 
                     // 2. 并发探测（绑定底层真实网络，避免 VPN 隧道干扰测量）
                     Network bindNet = getUnderlyingNetwork(appCtx);
                     List<IpLatency> alive = probeAll(candidates, total, bindNet, callback);
 
-                    /* 区域归类：只保留「从本机网络真实落地在 港/日/新/台/韩/美西」的入口。
-                       旧逻辑只看 TCP 握手延迟，实测会把池子填满美西 IP（港/日 0 个），
-                       而中国移动的国际出口恰恰港日方向最好。 */
+                    // 3. 区域归类：只留三地，第一轮每个 /24 只取 1 个（保证前缀多样性）
+                    List<IpLatency> regional = new ArrayList<>();
                     if (!alive.isEmpty()) {
-                        List<IpLatency> regional = classifyByColo(alive, callback);
-                        if (!regional.isEmpty()) alive = regional;
-                        else Log.w(TAG, "落地归类无结果，回退按延迟排序的原始候选");
+                        regional = classifyByColo(alive, false, POOL_CAPACITY, callback);
+                    }
+                    if (regional.isEmpty() && !alive.isEmpty()) {
+                        Log.w(TAG, "落地归类无结果，回退按延迟排序的原始候选");
+                        regional = new ArrayList<>(alive.subList(0, Math.min(POOL_CAPACITY, alive.size())));
                     }
 
-                    if (alive.isEmpty()) {
+                    // 4. 深挖补足：三地扫不满 200 时，从最快的几个 /24 段再抽 IP 实测补齐
+                    if (!regional.isEmpty() && regional.size() < POOL_CAPACITY) {
+                        regional = fillUpByCidr(regional, bindNet, callback);
+                    }
+
+                    if (regional.isEmpty()) {
                         message = "未探测到可用 IP，请检查当前网络连通性";
                         Log.w(TAG, message);
                     } else {
-                        // 3. 合并演进：旧池前 KEEP_OLD + 新扫最优，去重装满 POOL_CAPACITY
-                        List<String> merged = mergePool(oldPool, alive);
+                        // 5. 整池换新，不保留任何旧 IP
+                        List<String> merged = new ArrayList<>();
+                        java.util.Set<String> uniq = new java.util.HashSet<>();
+                        for (IpLatency it : regional) {
+                            if (merged.size() >= POOL_CAPACITY) break;
+                            if (uniq.add(it.ip)) merged.add(it.ip);
+                        }
                         String nowStr = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
                         String dateStr = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
 
@@ -376,9 +407,9 @@ public class CfIpPool {
                         size = merged.size();
                         ok = true;
                         message = "已更新 " + slotName + " IP 池，共 " + size + " 个可用 IP";
-                        Log.i(TAG, message + "（旧池保留 " + Math.min(KEEP_OLD, oldPool.size())
-                                + " 个 + 新增 " + Math.max(0, size - Math.min(KEEP_OLD, oldPool.size())) + " 个）");
+                        Log.i(TAG, message + "（整池换新，旧池 " + oldPool.size() + " 个已废弃）");
                     }
+
                 } catch (Throwable t) {
                     message = "IP 池更新异常: " + t.getMessage();
                     Log.e(TAG, message, t);
@@ -427,29 +458,71 @@ public class CfIpPool {
     }
 
     /**
-     * 合并算法：旧池头部 KEEP_OLD 个（历史稳定锚点）优先保留，其余名额用本次新测出的最优 IP 补满。
+     * 深挖补足：池子不足 POOL_CAPACITY 时，从延迟最优的若干个 /24 段里
+     * 再随机抽 IP 实测，落地在三地的才并入池子。
+     *
+     * 依据：排名靠前的 /24 段整体质量都不错（实测 172.64.53.x 全部落地 NRT），
+     * 只是在"每 /24 只留 1 个"的规则下被浪费了。
+     * 注意不是盲抽 —— 每个都实测落地 POP，同段的 IP 也可能落到别的区域。
      */
-    static List<String> mergePool(List<String> oldPool, List<IpLatency> alive) {
-        LinkedHashSet<String> result = new LinkedHashSet<>();
+    private static List<IpLatency> fillUpByCidr(List<IpLatency> pool, Network bindNet,
+                                               final PoolCallback callback) {
+        long t0 = System.currentTimeMillis();
+        List<String> cidrs = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (IpLatency it : pool) {
+            if (seen.add(cidr24(it.ip))) {
+                cidrs.add(cidr24(it.ip));
+                if (cidrs.size() >= FILL_CIDR_COUNT) break;
+            }
+        }
+        if (cidrs.isEmpty()) return pool;
 
-        int keep = Math.min(KEEP_OLD, oldPool.size());
-        for (int i = 0; i < keep; i++) {
-            result.add(oldPool.get(i));
+        java.util.Set<String> existed = new java.util.HashSet<>();
+        for (IpLatency it : pool) existed.add(it.ip);
+
+        Random rnd = new Random();
+        List<String> deep = new ArrayList<>();
+        for (String c : cidrs) {
+            for (int k = 0; k < FILL_PER_CIDR; k++) {
+                String ip = c + "." + (rnd.nextInt(254) + 1);
+                if (!existed.add(ip)) continue;
+                deep.add(ip);
+            }
+        }
+        if (deep.isEmpty()) return pool;
+
+        Log.i(TAG, "深挖补足：池子 " + pool.size() + " 个不足 " + POOL_CAPACITY
+                + "，从最快 " + cidrs.size() + " 个 /24 段再探 " + deep.size() + " 个 IP");
+
+        List<IpLatency> probed = probeAll(deep, deep.size(), bindNet, callback);
+        if (probed.isEmpty()) return pool;
+
+        // 归类（允许同段多个，否则补不进来）
+        List<IpLatency> extra = classifyByColo(probed, true, POOL_CAPACITY, callback);
+        if (extra.isEmpty()) {
+            Log.w(TAG, "深挖补足：没有新的合格 IP");
+            return pool;
         }
 
-        // alive 已按延迟升序
-        for (IpLatency item : alive) {
-            if (result.size() >= POOL_CAPACITY) break;
-            result.add(item.ip);
-        }
+        List<IpLatency> all = new ArrayList<>(pool);
+        all.addAll(extra);
+        Collections.sort(all, new Comparator<IpLatency>() {
+            @Override public int compare(IpLatency x, IpLatency y) {
+                return Float.compare(x.latency, y.latency);
+            }
+        });
 
-        // 极端情况兜底：新扫结果太少时，用旧池剩余项补齐
-        for (String ip : oldPool) {
-            if (result.size() >= POOL_CAPACITY) break;
-            result.add(ip);
+        List<IpLatency> out = new ArrayList<>();
+        java.util.Set<String> used = new java.util.HashSet<>();
+        for (IpLatency it : all) {
+            if (out.size() >= POOL_CAPACITY) break;
+            if (used.add(it.ip)) out.add(it);
         }
-
-        return new ArrayList<>(result);
+        Log.i(TAG, "深挖补足完成：" + pool.size() + " -> " + out.size()
+                + " 个（新增 " + extra.size() + " 候选），耗时 "
+                + (System.currentTimeMillis() - t0) + "ms");
+        return out;
     }
 
     /* ======================= 落地 POP 归类（区域感知优选） =======================
@@ -460,7 +533,6 @@ public class CfIpPool {
     private static final String PROBE_HOST = "jp2-xt.meetmeag.com";
     private static final int COLO_TIMEOUT_MS = 2000;
     private static final int COLO_MAX_CHECK = 320;
-    private static final int REGION_CAP = 100;
 
     private static final java.util.Map<String, String> COLO_AREA = new java.util.HashMap<String, String>();
     static {
@@ -474,7 +546,6 @@ public class CfIpPool {
         String[] us = {"LAX", "SJC", "SEA", "PDX", "SFO"};
         for (String c : us) COLO_AREA.put(c, "美西");
     }
-    private static final String[] AREA_ORDER = {"香港", "日本", "新加坡", "中国台湾", "韩国", "美西"};
 
     /**
      * 落地 POP 内存缓存：IP -> colo（NRT / SIN / HKG ...）。
@@ -566,8 +637,17 @@ public class CfIpPool {
         return i > 0 ? ip.substring(0, i) : ip;
     }
 
-    /** 对延迟最优的一批候选做落地归类，返回按区域轮转交错的列表 */
-    static List<IpLatency> classifyByColo(List<IpLatency> alive, final PoolCallback callback) {
+    /**
+     * 对延迟最优的一批候选做落地归类。
+     * 只收 日本/香港/新加坡 三地；全部合并后按延迟升序返回，不追求区域均衡——
+     * 本机线路优出来的本就集中在一两个区域，强行轮转只会把慢的塞进池子。
+     *
+     * @param multiPerCidr 是否允许同一个 /24 段收多个 IP。
+     *                     第一轮 false（保证前缀多样性），深挖补足轮 true（否则补不进来）。
+     * @param limit        返回数量上限
+     */
+    static List<IpLatency> classifyByColo(List<IpLatency> alive, final boolean multiPerCidr,
+                                          final int limit, final PoolCallback callback) {
         int check = Math.min(COLO_MAX_CHECK, alive.size());
         if (check <= 0) return new ArrayList<IpLatency>();
         final List<IpLatency> head = new ArrayList<IpLatency>(alive.subList(0, check));
@@ -587,14 +667,14 @@ public class CfIpPool {
                         String colo = probeColo(it.ip);
                         if (colo != null) COLO_CACHE.put(it.ip, colo);   /* 顺手缓存，界面展示复用 */
                         String area = (colo == null) ? null : COLO_AREA.get(colo);
-                        if (area != null && seenCidr.add(cidr24(it.ip))) {
-                            List<IpLatency> l = byArea.get(area);
-                            if (l == null) {
-                                l = java.util.Collections.synchronizedList(new ArrayList<IpLatency>());
-                                byArea.put(area, l);
-                            }
-                            l.add(it);
+                        if (area == null || !isTargetArea(area)) return;
+                        if (!multiPerCidr && !seenCidr.add(cidr24(it.ip))) return;
+                        List<IpLatency> l = byArea.get(area);
+                        if (l == null) {
+                            l = java.util.Collections.synchronizedList(new ArrayList<IpLatency>());
+                            byArea.put(area, l);
                         }
+                        l.add(it);
                     } catch (Throwable ignored) {
                     } finally {
                         int d = done.incrementAndGet();
@@ -614,43 +694,29 @@ public class CfIpPool {
         try { latch.await(120, TimeUnit.SECONDS); } catch (Throwable ignored) { }
         pool.shutdownNow();
 
-        java.util.Map<String, List<IpLatency>> capped = new java.util.HashMap<String, List<IpLatency>>();
-        for (String a : AREA_ORDER) {
-            List<IpLatency> l = byArea.get(a);
-            if (l == null || l.isEmpty()) continue;
-            List<IpLatency> copy;
-            synchronized (l) { copy = new ArrayList<IpLatency>(l); }
-            Collections.sort(copy, new Comparator<IpLatency>() {
-                @Override public int compare(IpLatency x, IpLatency y) {
-                    return Float.compare(x.latency, y.latency);
-                }
-            });
-            if (copy.size() > REGION_CAP) copy = new ArrayList<IpLatency>(copy.subList(0, REGION_CAP));
-            capped.put(a, copy);
+        // 合并三地结果，按延迟升序取前 limit 个
+        List<IpLatency> all = new ArrayList<IpLatency>();
+        for (java.util.Map.Entry<String, List<IpLatency>> e : byArea.entrySet()) {
+            List<IpLatency> l = e.getValue();
+            synchronized (l) { all.addAll(l); }
         }
-
-        List<IpLatency> out = new ArrayList<IpLatency>();
-        for (int i = 0; ; i++) {
-            boolean added = false;
-            for (String a : AREA_ORDER) {
-                List<IpLatency> l = capped.get(a);
-                if (l != null && i < l.size()) {
-                    out.add(l.get(i));
-                    added = true;
-                    if (out.size() >= POOL_CAPACITY) break;
-                }
+        Collections.sort(all, new Comparator<IpLatency>() {
+            @Override public int compare(IpLatency x, IpLatency y) {
+                return Float.compare(x.latency, y.latency);
             }
-            if (!added || out.size() >= POOL_CAPACITY) break;
-        }
+        });
+        if (all.size() > limit) all = new ArrayList<IpLatency>(all.subList(0, limit));
 
         StringBuilder sb = new StringBuilder();
-        for (String a : AREA_ORDER) {
-            List<IpLatency> l = capped.get(a);
-            sb.append(a).append(':').append(l == null ? 0 : l.size()).append(' ');
+        for (String a : TARGET_AREAS) {
+            List<IpLatency> l = byArea.get(a);
+            int n = 0;
+            if (l != null) { synchronized (l) { n = l.size(); } }
+            sb.append(a).append(':').append(n).append(' ');
         }
-        Log.i(TAG, "落地归类 " + check + " 个候选 -> 保留 " + out.size() + " 个 ["
+        Log.i(TAG, "落地归类 " + check + " 个候选 -> 保留 " + all.size() + " 个 ["
                 + sb.toString().trim() + "] 耗时 " + (System.currentTimeMillis() - t0) + "ms");
-        return out;
+        return all;
     }
 
     /* ======================= 探测实现 ======================= */

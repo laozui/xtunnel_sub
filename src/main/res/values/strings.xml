@@ -150,7 +150,7 @@
 
         <!-- 本地可用 IP 池（三网络分区） -->
         <string name="cf_pool_card_title">本地可用 IP 池</string>
-        <string name="cf_pool_card_desc">按网络分区独立维护：WiFi / 卡槽1 / 卡槽2 各自 50 个，优选时合并打分</string>
+        <string name="cf_pool_card_desc">按网络分区独立维护：WiFi / 卡槽1 / 卡槽2 各自 200 个（仅取日本/香港/新加坡），优选时合并打分</string>
         <string name="cf_pool_current_net">当前网络：%1$s</string>
         <string name="cf_pool_line_wifi">WiFi 池：%1$s</string>
         <string name="cf_pool_line_sim1">卡槽1 池：%1$s</string>

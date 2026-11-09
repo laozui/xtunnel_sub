@@ -71,7 +71,7 @@ public class Preferences
         public static final String CF_POOL_PREFIX = "CfPool_";
         public static final String CF_POOL_TIME_PREFIX = "CfPoolTime_";
         public static final String CF_POOL_DATE_PREFIX = "CfPoolDate_";
-        public static final int CF_POOL_CAPACITY = 50;
+        public static final int CF_POOL_CAPACITY = 200;
 
         private SharedPreferences prefs;
         private String currentProfileId;

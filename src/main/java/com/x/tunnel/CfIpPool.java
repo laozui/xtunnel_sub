@@ -476,6 +476,55 @@ public class CfIpPool {
     }
     private static final String[] AREA_ORDER = {"香港", "日本", "新加坡", "中国台湾", "韩国", "美西"};
 
+    /**
+     * 落地 POP 内存缓存：IP -> colo（NRT / SIN / HKG ...）。
+     * ★ 仅供界面展示查表用。任何情况下都不得把 colo 拼进连接参数——
+     *   Windows 端曾把 "(NRT)" 拼进节点 IP，内核当域名解析，导致 25 条通道全挂。
+     */
+    private static final java.util.Map<String, String> COLO_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<String, String>();
+
+    /** 查落地 POP：先查缓存，未命中现探一次并缓存（失败返回 null） */
+    static String coloOf(String ip) {
+        if (ip == null || ip.isEmpty()) return null;
+        String c = COLO_CACHE.get(ip);
+        if (c != null) return c;
+        c = probeColo(ip);
+        if (c != null) COLO_CACHE.put(ip, c);
+        return c;
+    }
+
+    /**
+     * 批量查落地 POP（并发，4 路），返回与入参等长的数组，探不到的位置为 null。
+     * N 通常只有 3~5 个，最坏耗时约一个超时周期。
+     */
+    static String[] colosOf(java.util.List<String> ips) {
+        if (ips == null || ips.isEmpty()) return new String[0];
+        final String[] out = new String[ips.size()];
+        final CountDownLatch latch = new CountDownLatch(ips.size());
+        ExecutorService pool = Executors.newFixedThreadPool(Math.min(4, ips.size()));
+        for (int i = 0; i < ips.size(); i++) {
+            final int idx = i;
+            final String ip = ips.get(i);
+            pool.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        out[idx] = coloOf(ip);
+                    } catch (Throwable ignored) {
+                    } finally {
+                        latch.countDown();
+                    }
+                }
+            });
+        }
+        try {
+            latch.await(6, TimeUnit.SECONDS);
+        } catch (InterruptedException ignored) {
+        }
+        pool.shutdownNow();
+        return out;
+    }
+
     /** 探测单个 IP 的落地 POP（失败返回 null） */
     static String probeColo(String ip) {
         javax.net.ssl.SSLSocket s = null;
@@ -536,6 +585,7 @@ public class CfIpPool {
                 @Override public void run() {
                     try {
                         String colo = probeColo(it.ip);
+                        if (colo != null) COLO_CACHE.put(it.ip, colo);   /* 顺手缓存，界面展示复用 */
                         String area = (colo == null) ? null : COLO_AREA.get(colo);
                         if (area != null && seenCidr.add(cidr24(it.ip))) {
                             List<IpLatency> l = byArea.get(area);

@@ -374,6 +374,23 @@ public class CfOptimizer {
         }
         final String newTopIps = sbTop.toString();
 
+        // ★ 展示串：带落地 POP 标签（如 172.64.53.1(NRT)），只给界面看。
+        //   绝不能写回 prefs.getCfOptTopIps() 或节点 ip —— 那会直接喂给内核当连接地址，
+        //   内核会把 "(NRT)" 当域名做 DNS 解析，导致全部通道 no such host。
+        StringBuilder sbDisp = new StringBuilder();
+        if (pickCount > 0) {
+            java.util.List<String> ips = new ArrayList<String>(pickCount);
+            for (int i = 0; i < pickCount; i++) ips.add(topCandidates.get(i).ip);
+            String[] colos = CfIpPool.colosOf(ips);
+            for (int i = 0; i < pickCount; i++) {
+                if (i > 0) sbDisp.append(",");
+                sbDisp.append(ips.get(i));
+                String colo = (colos != null && i < colos.length) ? colos[i] : null;
+                if (colo != null && !colo.isEmpty()) sbDisp.append("(").append(colo).append(")");
+            }
+        }
+        final String newTopDisplay = sbDisp.toString();
+
         CandidateItem best = topCandidates.get(0);
         final String summary = String.format(Locale.getDefault(),
                 "最低 %.1fms / 抖动 %.1fms (CV: %.2f)", best.p50, best.jitter, best.cv);
@@ -383,6 +400,7 @@ public class CfOptimizer {
         // 5. 持久化存盘
         boolean ipChanged = !newTopIps.equals(prefs.getCfOptTopIps());
         prefs.setCfOptTopIps(newTopIps);
+        prefs.setCfOptTopDisplay(newTopDisplay);   /* 展示串单独存，绝不参与连接 */
         prefs.setCfOptLastTime(nowStr);
         prefs.setCfOptSummary(summary);
 

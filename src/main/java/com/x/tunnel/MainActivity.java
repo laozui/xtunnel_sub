@@ -726,12 +726,15 @@ public class MainActivity extends AppCompatActivity {
             textCfOptLastTime.setText(getString(R.string.cf_opt_last_time, lastTime));
         }
 
+        // 展示优先用带落地 POP 标签的串（172.64.53.1(NRT)）；没有则回退纯 IP
+        String topDisplay = prefs.getCfOptTopDisplay();
         String topIps = prefs.getCfOptTopIps();
-        if (topIps == null || topIps.isEmpty()) {
-            textCfOptTopIps.setText(R.string.cf_opt_top_ips_none);
+        if (topDisplay != null && !topDisplay.isEmpty()) {
+            textCfOptTopIps.setText(topDisplay.replace(",", "\n"));
+        } else if (topIps != null && !topIps.isEmpty()) {
+            textCfOptTopIps.setText(topIps.replace(",", "\n"));
         } else {
-            String formattedIps = topIps.replace(",", "\n");
-            textCfOptTopIps.setText(formattedIps);
+            textCfOptTopIps.setText(R.string.cf_opt_top_ips_none);
         }
 
         String summary = prefs.getCfOptSummary();

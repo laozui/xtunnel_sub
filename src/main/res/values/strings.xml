@@ -143,7 +143,7 @@
         <string name="cf_opt_status_running">⚡ 测速打分中…</string>
         <string name="cf_opt_last_time">上次优选：%1$s</string>
         <string name="cf_opt_never_run">上次优选：尚未执行</string>
-        <string name="cf_opt_top_ips_title">当前最优黄金 IP (数量 = 节点并发数)：</string>
+        <string name="cf_opt_top_ips_title">当前最优黄金 IP (数量=并发数，括号内为接入地区)：</string>
         <string name="cf_opt_top_ips_none">暂无，请点击立即优选</string>
         <string name="toast_cf_opt_started">已开始在本地网络环境执行动态优选打分…</string>
         <string name="toast_cf_opt_done">本地优选完成，黄金 IP 榜单已生效！</string>

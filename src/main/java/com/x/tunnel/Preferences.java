@@ -60,6 +60,11 @@ public class Preferences
         public static final String CF_OPT_APPLY_ALL = "CfOptApplyAll";
         public static final String CF_OPT_LAST_TIME = "CfOptLastTime";
         public static final String CF_OPT_TOP_IPS = "CfOptTopIps";
+        /**
+         * 展示专用：带落地 POP 标签的黄金 IP 串（如 172.64.53.1(NRT)）。
+         * ★ 严禁用于连接参数或写入节点 ip —— 内核会把 "(NRT)" 当成域名解析，导致全线不可用。
+         */
+        public static final String CF_OPT_TOP_DISPLAY = "CfOptTopDisplay";
         public static final String CF_OPT_SUMMARY = "CfOptSummary";
 
         /* 本地可用 IP 池（按网络分区：wifi / sim1 / sim2，每池上限 50） */
@@ -353,9 +358,29 @@ public class Preferences
                 editor.commit();
         }
 
-        public String getPrefIp() { return prefs.getString(getKey(PREF_IP), ""); }
+        /**
+         * 最后一道闸门：节点 IP 串是要直接交给内核的连接地址。
+         * 剥掉 "(NRT)" 这类人类可读标签——CF 入口是裸 IPv4，出现括号一定是脏数据，
+         * 原样交给内核只会得到 "lookup 1.2.3.4(NRT): no such host"，全线不可用。
+         * 正常串里没有 '('，直接原样返回，零额外开销。
+         */
+        private static String sanitizeIps(String s) {
+                if (s == null || s.indexOf('(') < 0) return s;
+                StringBuilder b = new StringBuilder(s.length());
+                for (int i = 0; i < s.length(); i++) {
+                        char c = s.charAt(i);
+                        if (c == '(') {
+                                while (i < s.length() && s.charAt(i) != ')') i++;
+                                continue;
+                        }
+                        b.append(c);
+                }
+                return b.toString().replace(", ", ",").replace(" ,", ",").trim();
+        }
 
-        public String getPrefIp(String profileId) { return prefs.getString(getKey(PREF_IP, profileId), ""); }
+        public String getPrefIp() { return sanitizeIps(prefs.getString(getKey(PREF_IP), "")); }
+
+        public String getPrefIp(String profileId) { return sanitizeIps(prefs.getString(getKey(PREF_IP, profileId), "")); }
 
         public void setPrefIp(String ip) {
                 SharedPreferences.Editor editor = prefs.edit();
@@ -560,6 +585,17 @@ public class Preferences
         public void setCfOptTopIps(String ips) {
                 SharedPreferences.Editor editor = prefs.edit();
                 editor.putString(CF_OPT_TOP_IPS, ips);
+                editor.commit();
+        }
+
+        /** 展示专用（带区域标签），只给界面读，绝不能喂给内核 */
+        public String getCfOptTopDisplay() {
+                return prefs.getString(CF_OPT_TOP_DISPLAY, "");
+        }
+
+        public void setCfOptTopDisplay(String display) {
+                SharedPreferences.Editor editor = prefs.edit();
+                editor.putString(CF_OPT_TOP_DISPLAY, display);
                 editor.commit();
         }
 

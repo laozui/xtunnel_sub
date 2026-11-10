@@ -60,6 +60,11 @@ public class CfOptimizer {
        但丢包率/抖动判定精度远好于 2 次，避免"半丢包 IP"混入 Top5） */
     private static final int REFINE_SAMPLES = 3;
 
+    /* 丢包硬过滤阈值（%）。握手快 ≠ 扛得住持续传输：有的 IP 握手 35ms、
+       实跑丢包 33%，进榜就占掉一条并发通道的名额。精测后按真实丢包率剔除；
+       只有健康候选填不满名额时才网开一面。 */
+    private static final float LOSS_REJECT_PCT = 20.0f;
+
     /* 内置优质 Cloudflare 跨运营商种子 IP 库 */
     private static final String[] BUILTIN_CF_IPS = {
         "104.16.0.0", "104.17.0.0", "104.18.0.0", "104.19.0.0", "104.20.0.0",
@@ -272,6 +277,15 @@ public class CfOptimizer {
                     + CarrierDetect.summary(carrierOut[0]) + "）共 " + pool.size() + " 个");
         }
         if (pool.isEmpty()) {
+            /* 兜底第一顺位：离线池（历史长期优选留下的最佳 50 个）。
+               它比全量扫出来的临时池更稳定，所以排在本地池前面，照样要过初筛+精测。 */
+            List<String> offline = OfflinePool.load(context);
+            if (!offline.isEmpty()) {
+                pool.addAll(offline);
+                Log.i(TAG, "候选池来源: 离线兜底池（历史最优）共 " + pool.size() + " 个");
+            }
+        }
+        if (pool.isEmpty()) {
             List<String> localPool = CfIpPool.getMergedPool(context, prefs);
             if (!localPool.isEmpty()) {
                 pool.addAll(localPool);
@@ -379,6 +393,40 @@ public class CfOptimizer {
                 return Float.compare(a.elasticScore, b.elasticScore);
             }
         });
+
+        /* 3.5 丢包硬过滤：初筛只看「握手成没成」，握手快不代表扛得住持续传输 ——
+           有的 IP 握手 35ms、真跑起来丢包 33%，进榜就占掉一条并发通道的名额。
+           判据用精测出来的真实丢包率；只有健康候选 ≥ 目标名额时才敢剔，
+           否则宁可要个 30% 丢包的，也比留个空位强。 */
+        {
+            int healthy = 0;
+            for (CandidateItem it : topCandidates) {
+                if (it.firstSuccess && it.lossPct < LOSS_REJECT_PCT) healthy++;
+            }
+            if (healthy >= targetN && healthy < topCandidates.size()) {
+                int dropped = 0;
+                for (int i = topCandidates.size() - 1; i >= 0; i--) {
+                    if (topCandidates.get(i).lossPct >= LOSS_REJECT_PCT) {
+                        topCandidates.remove(i);
+                        dropped++;
+                    }
+                }
+                Log.i(TAG, "丢包硬过滤：剔除 " + dropped + " 个丢包 ≥" + (int) LOSS_REJECT_PCT
+                        + "% 的 IP，保留 " + topCandidates.size() + " 个健康候选");
+            } else if (healthy < targetN) {
+                Log.i(TAG, "健康候选仅 " + healthy + " 个（不足目标 " + targetN + " 个），本轮不做丢包过滤，避免留空位");
+            }
+        }
+
+        /* 3.6 把本轮最佳 IP 推进离线兜底池。放在排序之后 —— 即便榜单保持不动，
+           最佳 IP 也会被刷新到队尾（LRU：一直好用的 IP 永远不会被淘汰）。 */
+        if (!topCandidates.isEmpty()) {
+            boolean grew = OfflinePool.push(context, topCandidates.get(0).ip);
+            if (grew) {
+                Log.i(TAG, "离线兜底池已收录新 IP " + topCandidates.get(0).ip
+                        + "（" + OfflinePool.count(context) + "/" + OfflinePool.MAX + "）");
+            }
+        }
 
         // 4. 选取 Top N 最优 IP（N = 当前节点并发连接数，由目标并发决定实际需要的 IP 条数）
         int pickCount = Math.min(topCandidates.size(), targetN);
@@ -512,13 +560,13 @@ public class CfOptimizer {
             }
         }, 2000);
 
-        // 1.5 延迟 8 秒检查「本地 IP 池」今日是否已更新，未更新则在后台自动补一次，
-        //     更新完成后若已启用优选，再补跑一轮优选，把新扫到的优质 IP 用起来。
+        // 1.5 延迟 8 秒检查段池是否已生成。段池只在**首次**自动生成一次，
+        //     之后不再自动更新（只手动更新）—— 建完库顺手补跑一轮优选，把新扫到的优质 IP 用起来。
         schedulerHandler.postDelayed(() -> {
             Preferences p = new Preferences(appContext);
             if (!p.getCfOptEnabled()) return;
-            CfIpPool.maybeDailyUpdate(appContext, (success, slot, poolSize, message) -> {
-                Log.i(TAG, "IP 池每日更新结果: " + message);
+            CfIpPool.maybeInitialUpdate(appContext, (success, slot, poolSize, message) -> {
+                Log.i(TAG, "段池首次建库结果: " + message);
                 if (success) {
                     Preferences p2 = new Preferences(appContext);
                     if (p2.getCfOptEnabled()) {
@@ -581,9 +629,9 @@ public class CfOptimizer {
             schedulerHandler.postDelayed(() -> {
                 Preferences p = new Preferences(context);
                 if (p.getCfOptEnabled()) {
-                    /* 若新线路对应的 IP 池今天还没更新过，先静默更新（扫描完成后会自动补跑一轮优选），
-                       这样换到新运营商时不会拿旧线路的 IP 硬试。 */
-                    CfIpPool.maybeDailyUpdate(context, (success, s, size, message) -> {
+                    /* 换到新分区（比如 WiFi 切到移动卡）时，该分区可能还没有段库 ——
+                       有就正常优选；没有才自动建一次库（之后只手动更新）。 */
+                    CfIpPool.maybeInitialUpdate(context, (success, s, size, message) -> {
                         Preferences p2 = new Preferences(context);
                         if (success && p2.getCfOptEnabled()) {
                             startOptimize(context, false);

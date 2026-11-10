@@ -532,47 +532,60 @@ public class MainActivity extends AppCompatActivity {
     private void setupCfPoolUi() {
         buttonUpdateCfPool.setOnClickListener(v -> {
             if (CfIpPool.isScanning()) {
-                Toast.makeText(this, "IP 池正在更新中，请稍候…", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "段池正在更新中，请稍候…", Toast.LENGTH_SHORT).show();
                 return;
             }
-            Toast.makeText(this, R.string.toast_cf_pool_started, Toast.LENGTH_SHORT).show();
-            buttonUpdateCfPool.setEnabled(false);
-            buttonUpdateCfPool.setText(R.string.cf_pool_updating);
-
-            CfIpPool.updateCurrentPoolAsync(this, true, new CfIpPool.PoolCallback() {
-                @Override
-                public void onProgress(int done, int total, String hint) {
-                    runOnUiThread(() -> {
-                        if (buttonUpdateCfPool != null) {
-                            buttonUpdateCfPool.setText("⏳ 扫描中 " + done + "/" + total);
-                        }
-                    });
-                }
-
-                @Override
-                public void onFinish(boolean success, String slot, int poolSize, String message) {
-                    runOnUiThread(() -> {
-                        buttonUpdateCfPool.setEnabled(true);
-                        buttonUpdateCfPool.setText(R.string.cf_pool_update_btn);
-                        updateCfPoolUi();
-                        if (success) {
-                            Toast.makeText(MainActivity.this,
-                                    getString(R.string.toast_cf_pool_done, CfIpPool.slotDisplayName(slot), poolSize),
-                                    Toast.LENGTH_LONG).show();
-                            // 池子刚更新完，立刻用新池跑一次优选，让效果马上生效
-                            if (prefs.getCfOptEnabled() && !CfOptimizer.isOptimizing()) {
-                                CfOptimizer.startOptimize(MainActivity.this, true);
-                            }
-                        } else {
-                            Toast.makeText(MainActivity.this,
-                                    getString(R.string.toast_cf_pool_failed, message),
-                                    Toast.LENGTH_LONG).show();
-                        }
-                    });
-                }
-            });
+            /* 段池只在首次安装时自动生成，之后全靠手动 —— 加一道确认，
+               避免误点后白等几分钟（而且使用正常时更新它通常只会引入波动）。 */
+            new AlertDialog.Builder(this)
+                    .setTitle("更新 IP 段池")
+                    .setMessage("IP 段池仅在首次安装时自动生成，之后不再自动更新。\n\n"
+                            + "使用正常时，不建议更新 IP 池 —— 重新扫描不会让当前表现变好，反而可能引入波动。\n\n"
+                            + "确定要重新扫描吗？（约 1~3 分钟，耗电与流量会明显增加）")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("继续更新", (d, which) -> startManualPoolUpdate())
+                    .show();
         });
         updateCfPoolUi();
+    }
+
+    private void startManualPoolUpdate() {
+        Toast.makeText(this, R.string.toast_cf_pool_started, Toast.LENGTH_SHORT).show();
+        buttonUpdateCfPool.setEnabled(false);
+        buttonUpdateCfPool.setText(R.string.cf_pool_updating);
+
+        CfIpPool.updateCurrentPoolAsync(this, true, new CfIpPool.PoolCallback() {
+            @Override
+            public void onProgress(int done, int total, String hint) {
+                runOnUiThread(() -> {
+                    if (buttonUpdateCfPool != null) {
+                        buttonUpdateCfPool.setText("扫描中 " + done + "/" + total);
+                    }
+                });
+            }
+
+            @Override
+            public void onFinish(boolean success, String slot, int poolSize, String message) {
+                runOnUiThread(() -> {
+                    buttonUpdateCfPool.setEnabled(true);
+                    buttonUpdateCfPool.setText(R.string.cf_pool_update_btn);
+                    updateCfPoolUi();
+                    if (success) {
+                        Toast.makeText(MainActivity.this,
+                                getString(R.string.toast_cf_pool_done, CfIpPool.slotDisplayName(slot), poolSize),
+                                Toast.LENGTH_LONG).show();
+                        // 池子刚更新完，立刻用新池跑一次优选，让效果马上生效
+                        if (prefs.getCfOptEnabled() && !CfOptimizer.isOptimizing()) {
+                            CfOptimizer.startOptimize(MainActivity.this, true);
+                        }
+                    } else {
+                        Toast.makeText(MainActivity.this,
+                                getString(R.string.toast_cf_pool_failed, message),
+                                Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+        });
     }
 
     /**
@@ -747,6 +760,12 @@ public class MainActivity extends AppCompatActivity {
         if (summary != null && !summary.isEmpty()) {
             optInfo.append("⚡ ").append(summary);
         }
+        /* 离线兜底池存量（历史最优 50 个，段池失效时顶上）*/
+        try {
+            int offN = OfflinePool.count(this);
+            if (optInfo.length() > 0) optInfo.append("  ");
+            optInfo.append("离线池 ").append(offN).append("/").append(OfflinePool.MAX);
+        } catch (Throwable ignored) { }
         if (optInfo.length() == 0) {
             textCfOptSummary.setVisibility(View.GONE);
         } else {

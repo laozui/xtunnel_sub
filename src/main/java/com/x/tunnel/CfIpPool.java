@@ -433,27 +433,33 @@ public class CfIpPool {
     }
 
     /**
-     * 每天首次进入时，若当前分区今天还没更新过，则静默在后台更新一次。
-     * 只更新当前分区，避免一次性跑三次扫描耗电。
+     * 段池自动生成**只发生在首次**：当前分区的段库不存在才跑一次全量扫建库。
+     *
+     * <p>老豆定的规矩（2026-11-10）：IP 段池第一次生成之后，正常情况下不再自动更新，
+     * 只手动更新。理由：段库对优选结果的影响是「有没有」，不是「新不新」——
+     * 每轮优选都会重新实测段代表 IP，库本身不需要跟着变。按天自动重建只会带来
+     * 无谓的波动（榜单大换血）和一次满速扫描的电量开销。
+     *
+     * @return true 表示触发了建库扫描
      */
-    public static void maybeDailyUpdate(final Context context) {
-        maybeDailyUpdate(context, null);
+    public static boolean maybeInitialUpdate(final Context context) {
+        return maybeInitialUpdate(context, null);
     }
 
-    public static void maybeDailyUpdate(final Context context, final PoolCallback callback) {
+    public static boolean maybeInitialUpdate(final Context context, final PoolCallback callback) {
         try {
             final Context appCtx = context.getApplicationContext();
-            final Preferences prefs = new Preferences(appCtx);
             final String slot = detectSlot(appCtx);
-            String today = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
-            if (today.equals(prefs.getCfPoolDate(slot))) {
-                Log.i(TAG, slotDisplayName(slot) + " IP 池今日已更新，跳过自动更新");
-                return;
+            if (CfCidrLib.hasLib(appCtx, slot)) {
+                Log.i(TAG, slotDisplayName(slot) + " 段池已存在，跳过自动建库（之后只手动更新）");
+                return false;
             }
-            Log.i(TAG, slotDisplayName(slot) + " IP 池今日未更新，后台自动更新...");
+            Log.i(TAG, slotDisplayName(slot) + " 未检测到段池（首次运行），后台自动生成一次...");
             updateCurrentPoolAsync(appCtx, false, callback);
+            return true;
         } catch (Throwable t) {
-            Log.w(TAG, "每日自动更新检查失败: " + t.getMessage());
+            Log.w(TAG, "首次建库检查失败: " + t.getMessage());
+            return false;
         }
     }
 

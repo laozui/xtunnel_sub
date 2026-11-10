@@ -1028,12 +1028,11 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, getString(R.string.toast_select_profile_saved) + ": " + item.name, Toast.LENGTH_SHORT).show();
         }
 
-        // 切换节点时自适应触发一次优选测速，确保新节点获得最新鲜低延迟的 IP
-        if (prefs.getCfOptEnabled()) {
-            new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                CfOptimizer.startOptimize(MainActivity.this, false);
-            }, 600);
-        }
+        /* 切换节点【不再】触发优选（老豆 2026-11-11 定调）。
+           黄金 IP 管「客户端 → CF 边缘」，节点管「CF 边缘 → 源站」，两段正交；
+           且优选结果默认已同步到全部节点，切节点再跑一遍只会写回配置、
+           热切换内核，打断正在使用的连接。
+           保留：启动预热 / 切网(WiFi↔SIM) / 手动立即优选 / 手动更新 IP 池。 */
     }
 
     private void showProfileMenu(View anchor, ProfileItem item) {

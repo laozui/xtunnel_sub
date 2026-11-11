@@ -186,19 +186,19 @@ public class CarrierDetect {
 
     /* ---------------- 运营商 → 区域 ---------------- */
 
-    /** 主区域（POP 白名单） */
+    /** 主区域（POP 白名单）。联通按老豆 2026-11-11 定稿的三区规则，与 Windows 端对齐。 */
     public static String regionsFor(String carrier) {
         if (TELECOM.equals(carrier)) return "NRT";
         if (MOBILE.equals(carrier)) return "HKG";
-        if (UNICOM.equals(carrier)) return "NRT,HKG";
+        if (UNICOM.equals(carrier)) return "NRT,HKG,SIN";
         return "NRT,HKG,SIN";
     }
 
-    /** 主区域产能不足时的降级区域 */
+    /** 主区域产能不足时的降级区域。联通主区已含 SIN，无需再降级。 */
     public static String fallbackFor(String carrier) {
         if (TELECOM.equals(carrier)) return "HKG,SIN";
         if (MOBILE.equals(carrier)) return "NRT,SIN";
-        if (UNICOM.equals(carrier)) return "SIN";
+        if (UNICOM.equals(carrier)) return "";
         return "";
     }
 
@@ -228,7 +228,6 @@ public class CarrierDetect {
         String r = regionsFor(carrier);
         if ("NRT".equals(r)) return carrier + " → 日本 NRT";
         if ("HKG".equals(r)) return carrier + " → 香港 HKG";
-        if ("NRT,HKG".equals(r)) return carrier + " → 日本 NRT + 香港 HKG";
         return carrier + " → 三地混合";
     }
 }

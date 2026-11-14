@@ -38,9 +38,17 @@ public class TProxyService extends VpnService {
 	private static native void TProxyStopService();
 	private static native long[] TProxyGetStats();
 
+	/** 供看门狗读取原生层收发字节数（判断是否还在真正转发）。 */
+	static long[] nativeStats() {
+		return TProxyGetStats();
+	}
+
         public static final String ACTION_CONNECT = "com.x.tunnel.CONNECT";
         public static final String ACTION_DISCONNECT = "com.x.tunnel.DISCONNECT";
         public static final String ACTION_SWITCH = "com.x.tunnel.SWITCH";
+        /* 深度重连：关 TUN + 停原生层 + 停内核 + 重建，等价于关掉 App 重开，但不杀进程。
+           由 TunnelWatchdog 在判定隧道僵死时触发。 */
+        public static final String ACTION_HEAL = "com.x.tunnel.HEAL";
 
         public static final String EXTRA_PROFILE_ID = "profile_id";
         public static final String EXTRA_PROFILE_NAME = "profile_name";
@@ -62,6 +70,9 @@ public class TProxyService extends VpnService {
 	private ParcelFileDescriptor tunFd = null;
         private final Object switchLock = new Object();
         private volatile int currentSwitchSeq = 0;
+        /* 深度重连互斥闸：同一时刻只允许一次拆建在跑。 */
+        private final java.util.concurrent.atomic.AtomicBoolean healInProgress =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -69,9 +80,21 @@ public class TProxyService extends VpnService {
             stopService();
             return START_NOT_STICKY;
         }
+        if (intent != null && ACTION_HEAL.equals(intent.getAction())) {
+            healTunnel(intent);
+            return START_STICKY;
+        }
         if (intent != null && ACTION_SWITCH.equals(intent.getAction())) {
             if (tunFd != null) {
                 switchProfile(intent);
+                return START_STICKY;
+            }
+            /* 深度重连期间 tunFd 被主动置空了。这时如果用户点「切换线路」，
+               老逻辑会直接 startService() 去建 TUN —— 和正在重建的线程抢，
+               结果是一个刚 establish 就被另一个 close 掉。
+               重建本来就会从 prefs 读最新节点，所以这里直接忽略即可。 */
+            if (healInProgress.get()) {
+                Log.i("xtunnel", "深度重连进行中，忽略切换请求（重建会自动用最新节点）");
                 return START_STICKY;
             }
             startService();
@@ -264,6 +287,14 @@ public class TProxyService extends VpnService {
 		String channelName = "socks5";
 		initNotificationChannel(channelName);
 		createNotification(channelName);
+
+		/* ★ 启动自愈看门狗：跑起来之后没人盯着，隧道僵死了界面也显示"已连接"。
+		   看门狗每 30 秒做三路取证，连续 3 轮僵死就触发深度重连。 */
+		TunnelWatchdog.start(this);
+
+		/* 把闲置已久的诊断日志真正跑起来（幂等）：万一还复发，
+		   logcat 里至少有 Go 侧状态快照 + 看门狗判定过程两份现场。 */
+		startDiagnosticsLogger();
 	}
 
     /**
@@ -400,12 +431,148 @@ public class TProxyService extends VpnService {
 
                     // 6. 刷新通知栏常驻显示
                     updateNotification(displayName);
+
+                    /* 7. 热切换成功后重置看门狗基线：
+                          新连接池的字节计数与旧池不连续，不重置会被误判成"僵死"。 */
+                    TunnelWatchdog.notifySwitched();
                 }
             }
         }, "xtunnel-switch-" + seq).start();
     }
 
+    /**
+     * 深度重连（自愈）：把整条隧道彻底拆掉再重建。
+     *
+     * 为什么不能复用 {@link #switchProfile}：
+     * 那个只重启 Go 侧的 SOCKS5 + WS 连接池，**TUN 网卡和原生转发层完全不动**。
+     * 老豆的实测恰恰是「切线路也没用」—— 说明僵死发生在这两层，
+     * 只重启内核等于隔靴搔痒。
+     *
+     * 与 stopService() 的区别：那边直接 System.exit(0) 杀进程，
+     * 用户会看到通知栏消失、需要重新授权；这里在**同一进程内**优雅重建 ——
+     * 原生层 native_stop_service 已确认会 quit + pthread_join 并复位 is_working，
+     * 所以可以安全地停了再起。效果等同于关机重开，但用户几乎无感。
+     *
+     * 注意：真实的拆除/重建放在后台线程。onStartCommand 跑在主线程，
+     * 里面有 Thread.sleep(500) 等 fd 释放 —— 放主线程会卡界面甚至 ANR。
+     */
+    public void healTunnel(Intent intent) {
+        /* 互斥：万一短时间内来了两个 HEAL（比如看门狗恰好和别处触发撞上），
+           绝不能让两个线程同时拆建 —— 那会把刚建好的 TUN 又拆掉。
+           已经在重连就直接忽略，反正目标状态一样。 */
+        if (!healInProgress.compareAndSet(false, true)) {
+            Log.i("xtunnel", "已有一次深度重连在进行中，忽略本次请求");
+            return;
+        }
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    doHealInBackground();
+                } finally {
+                    healInProgress.set(false);
+                }
+            }
+        }, "xtunnel-heal").start();
+    }
+
+    private void doHealInBackground() {
+        Log.w("xtunnel", "===== 开始深度重连（自愈） =====");
+
+        Preferences prefs = new Preferences(this);
+        if (!prefs.getEnable()) {
+            Log.i("xtunnel", "深度重连取消：用户已关闭 VPN");
+            return;
+        }
+
+        /* 立刻让看门狗闭嘴：下面要拆 TUN，拆完到重建完成之间探测必然不通，
+           不闭麦就会出现"拆→探不通→再判僵死→再拆"的死循环。
+           必须放在 try/finally 里 —— 万一重建抛异常直接 return，
+           rebuilding 会永远停在 true，看门狗就再也不干活了。 */
+        TunnelWatchdog.beginRebuild();
+        try {
+            /* 1. 彻底拆掉旧隧道。顺序很重要：
+                  先关 TUN（切断 App 流量入口）→ 再停原生转发层 → 最后停 Go 内核。
+                  反过来做会让原生层在 TUN 已消失的情况下继续收包，产生大量无主错误。 */
+            try {
+                if (tunFd != null) {
+                    try { tunFd.close(); } catch (Throwable ignored) { }
+                    tunFd = null;
+                    Log.i("xtunnel", "深度重连[1/5] 已关闭 TUN 网卡");
+                }
+            } catch (Throwable t) {
+                Log.w("xtunnel", "关闭 TUN 异常: " + t.getMessage());
+            }
+
+            try {
+                TProxyStopService();
+                Log.i("xtunnel", "深度重连[2/5] 已停止原生转发层");
+            } catch (Throwable t) {
+                Log.w("xtunnel", "停止原生转发层异常: " + t.getMessage());
+            }
+
+            try {
+                Tunnel.stopSocksProxy();
+                Log.i("xtunnel", "深度重连[3/5] 已停止 Go 内核");
+            } catch (Throwable t) {
+                Log.w("xtunnel", "停止 Go 内核异常: " + t.getMessage());
+            }
+
+            /* 2. 给系统一点时间真正回收 fd / 端口 / 原生线程。
+                  原生层 pthread_join 是同步的，但 socket fd 的最后引用可能还在
+                  内核的 TIME_WAIT 里；500ms 是实测下来既稳又不拖沓的值。 */
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException ignored) {
+            }
+
+            /* 3. 重建。startService() 内部会重新 establish TUN、重启原生层、重连内核，
+                  并用 prefs 里最新的节点/优选 IP 配置 —— 不需要在这里再拼参数。
+                  ★ 这一步必须回主线程做：平时 startService() 都是从 onStartCommand
+                  在主线程调起来的，VpnService.establish() 与界面/通知栏的交互按主线程
+                  语义设计；塞在后台线程跑虽然大多能成，但没理由去赌。这里投递到主线程
+                  并等它跑完（最多 20 秒），保证 endRebuild() 是在隧道真的重建之后才执行。 */
+            final java.util.concurrent.CountDownLatch done =
+                    new java.util.concurrent.CountDownLatch(1);
+            final Throwable[] err = new Throwable[1];
+            new Handler(Looper.getMainLooper()).post(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        startService();
+                    } catch (Throwable t) {
+                        err[0] = t;
+                    } finally {
+                        done.countDown();
+                    }
+                }
+            });
+            try {
+                if (!done.await(20, java.util.concurrent.TimeUnit.SECONDS)) {
+                    Log.w("xtunnel", "深度重连：重建步骤等待超时（主线程繁忙），仍继续");
+                }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+            if (err[0] != null) {
+                Log.e("xtunnel", "深度重连失败: " + err[0].getMessage(), err[0]);
+                return;
+            }
+            Log.i("xtunnel", "深度重连[4/5] 已在主线程完成重建");
+        } finally {
+            /* 4. 无论成败都要给看门狗解开闸门并复位基线（endRebuild 内部会清
+                  failStreak / lastBytes，效果覆盖原来的 notifySwitched）。
+                  注意这里**不清退避窗口** —— 退避只由"探测真的通了"来清，
+                  否则连续几次僵死会把间隔推到 10 分钟，网络早好了也得干等。 */
+            TunnelWatchdog.endRebuild();
+            Log.i("xtunnel", "深度重连[5/5] 结束，看门狗已恢复判定");
+        }
+    }
+
     public void stopService() {
+        /* 先停看门狗：避免它在我们主动断开的过程中又触发一次深度重连。 */
+        try { TunnelWatchdog.stop(); } catch (Throwable t) { }
+        try { stopDiagnosticsLogger(); } catch (Throwable t) { }
         try { stopForeground(true); } catch (Throwable t) { }
         try { Tunnel.stopSocksProxy(); } catch (Exception e) { }
         try { TProxyStopService(); } catch (Throwable t) { }
@@ -416,29 +583,61 @@ public class TProxyService extends VpnService {
         System.exit(0);
     }
 
+    /* 诊断日志线程句柄。原来这个函数写好了却从未被调用，
+       隧道僵死时连一份现场都没有；现在由 startService() 启动。
+       注意必须幂等 —— startService() 在深度重连/热切换里会被反复调用。 */
+    private volatile Thread diagThread = null;
+
+    /**
+     * 诊断日志：把 Go 侧写的 xtunnel_status.log 转发到 logcat。
+     *
+     * 原实现是每 5 秒把整份状态**无条件**打印一遍 —— 真启动起来 logcat 会被
+     * 重复内容糊死，反而把看门狗（TAG=TunnelWatchdog）的关键日志挤没了。
+     * 所以这里只在内容**发生变化**时打印，既留现场又不刷屏。
+     */
     private void startDiagnosticsLogger() {
-        new Thread(new Runnable() {
+        if (diagThread != null && diagThread.isAlive()) {
+            return;
+        }
+        Thread t = new Thread(new Runnable() {
             @Override
             public void run() {
+                String last = null;
                 while (!Thread.currentThread().isInterrupted()) {
                     try { Thread.sleep(5000); } catch (InterruptedException e) { break; }
                     try {
                         // 直接读取 Go 侧写入的诊断文件(不依赖 gomobile 方法绑定)
                         java.io.File f = new java.io.File(getFilesDir(), "xtunnel_status.log");
-                        if (f.exists()) {
-                            java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(f));
-                            StringBuilder sb = new StringBuilder();
-                            String line;
-                            while ((line = r.readLine()) != null) { sb.append(line).append("\n"); }
-                            r.close();
-                            Log.i("xtunnel", "===== TUNNEL STATUS =====\n" + sb.toString());
+                        if (!f.exists()) {
+                            continue;
+                        }
+                        java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(f));
+                        StringBuilder sb = new StringBuilder();
+                        String line;
+                        while ((line = r.readLine()) != null) { sb.append(line).append("\n"); }
+                        r.close();
+                        String cur = sb.toString();
+                        /* 状态没变就不打 —— 否则每 5 秒刷一遍同样的内容毫无意义。 */
+                        if (!cur.equals(last)) {
+                            last = cur;
+                            Log.i("xtunnel", "===== TUNNEL STATUS =====\n" + cur);
                         }
                     } catch (Throwable t) {
                         Log.e("xtunnel", "diag error", t);
                     }
                 }
             }
-        }, "xtunnel-diag").start();
+        }, "xtunnel-diag");
+        diagThread = t;
+        t.start();
+    }
+
+    private void stopDiagnosticsLogger() {
+        Thread t = diagThread;
+        diagThread = null;
+        if (t != null) {
+            t.interrupt();
+        }
     }
 
     private void writeStatusFile(String status) {

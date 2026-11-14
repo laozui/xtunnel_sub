@@ -125,11 +125,20 @@ func init() {
 // Java 方法(实测 gomobile 未为部分导出函数生成 Java 绑定，会导致编译失败)。
 const diagStatusPath = "/data/data/com.x.tunnel/files/xtunnel_status.log"
 
+// diagHealthPath 是给看门狗读的极简健康快照（一行纯数字）。
+// 不走 gomobile 绑定，原因同上 —— 文件通道最稳，且 Java 侧读文件零依赖。
+const diagHealthPath = "/data/data/com.x.tunnel/files/xtunnel_health.txt"
+
 // diagFileFlusher 每 5 秒把隧道实时状态写入诊断文件，供 App 界面/长按诊断读取。
+//
+// 顺带刷新健康快照：这是「自愈看门狗」唯一的判断依据 ——
+// 文件里的时间戳本身也是证据，超过 90 秒没刷新就说明这个 Go 协程已经停了。
 func diagFileFlusher() {
 	for {
 		time.Sleep(5 * time.Second)
 		_ = os.WriteFile(diagStatusPath, []byte(GetTunnelStatus()), 0600)
+		_ = os.WriteFile(diagHealthPath,
+			[]byte(fmt.Sprintf("%d|%s", time.Now().UnixMilli(), GetHealthSnapshot())), 0600)
 	}
 }
 
@@ -202,6 +211,43 @@ func GetRecentLogs() string {
 		start = len(diagLog) - 200
 	}
 	return strings.Join(diagLog[start:], "\n")
+}
+
+// GetHealthSnapshot 返回极简健康快照，供 Android 层看门狗判定「是否需要深度重连」。
+// 刻意只回一行纯数字，解析成本最低：
+//
+//	<通道就绪数>/<通道总数>|<池子是否存在(1/0)>|<SOCKS5监听是否存在(1/0)>
+//
+// 为什么需要它：VPN 卡死时界面仍显示"已连接"，App 自身无从判断。
+// 有了这个快照，看门狗就能区分"真的通"和"只是看起来连着"。
+// 注意「池子是否存在=0」是比心跳时间戳更硬的信号 —— 说明 echPool 已被置 nil
+// 且没有重建，内核实际已经不在服务了。
+func GetHealthSnapshot() string {
+	serviceMu.Lock()
+	p := echPool
+	listen := proxyListener
+	serviceMu.Unlock()
+
+	ready, total := 0, 0
+	if p != nil {
+		p.wsConnsMu.RLock()
+		total = len(p.smuxConns)
+		for _, sess := range p.smuxConns {
+			if sess != nil && !sess.IsClosed() {
+				ready++
+			}
+		}
+		p.wsConnsMu.RUnlock()
+	}
+	hasPool := 0
+	if p != nil {
+		hasPool = 1
+	}
+	hasListen := 0
+	if listen != nil {
+		hasListen = 1
+	}
+	return fmt.Sprintf("%d/%d|%d|%d", ready, total, hasPool, hasListen)
 }
 
 const (
@@ -1634,7 +1680,19 @@ func handleSOCKS5Connect(c net.Conn, target string) {
 		_ = c.Close()
 		return
 	}
-	stream, _, decision, err := echPool.openTCPStream(target)
+	/* ★ 必须先在锁内取到池子引用，绝不能在锁外直接读全局 echPool。
+	   热切换时 StopSocksProxy 会先把 echPool 置 nil、100ms 后才建新的；
+	   而自动优选每 15 分钟一轮、IP 一变就热重启，长期跑下来这个窗口必然被撞上。
+	   撞上就是 nil 解引用 panic —— Go 侧 panic 会终结整个进程，
+	   表现就是"整个 App 突然不干活了"。 */
+	serviceMu.Lock()
+	pool := echPool
+	serviceMu.Unlock()
+	if pool == nil {
+		_ = c.Close()
+		return
+	}
+	stream, _, decision, err := pool.openTCPStream(target)
 	if err != nil {
 		_ = c.Close()
 		return
@@ -1673,10 +1731,20 @@ func handleSOCKS5UDP(c net.Conn, cfgp *ProxyConfig) {
 		return
 	}
 
+	/* 同 handleSOCKS5Connect：池子引用必须在锁内取，避免热切换窗口内拿到 nil。 */
+	serviceMu.Lock()
+	pool := echPool
+	serviceMu.Unlock()
+	if pool == nil {
+		_ = ul.Close()
+		_ = c.Close()
+		return
+	}
+
 	assoc := &UDPAssociation{
 		tcpConn:     c,
 		udpListener: ul,
-		pool:        echPool,
+		pool:        pool,
 		channelID:   -1,
 	}
 

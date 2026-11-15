@@ -295,6 +295,18 @@ public class TProxyService extends VpnService {
 		/* 把闲置已久的诊断日志真正跑起来（幂等）：万一还复发，
 		   logcat 里至少有 Go 侧状态快照 + 看门狗判定过程两份现场。 */
 		startDiagnosticsLogger();
+
+		/* ★ 在 VPN 服务里也兜一次优选调度器（幂等）。
+		   原因：startScheduler 原本只在 MainActivity 创建时调用一次，也就是
+		   "只有打开界面才会排周期任务"。用户把 App 退到后台、界面被系统回收后，
+		   那条定时链就断了 —— 而「对抗 IP 老化」恰恰是要在他不用界面的时候起作用。
+		   VPN 服务是长期存活的（前台通知保活），挂在这里才能真正跑住。
+		   自适应模式下这里什么都不会排，所以不影响省电。 */
+		try {
+			CfOptimizer.startScheduler(this);
+		} catch (Throwable t) {
+			Log.w("xtunnel", "启动优选调度器失败: " + t.getMessage());
+		}
 	}
 
     /**

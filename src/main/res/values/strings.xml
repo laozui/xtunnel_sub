@@ -164,9 +164,9 @@
 
         <string-array name="cf_opt_interval_entries">
                 <item>自适应模式 (推荐)</item>
-                <item>每次启动 App</item>
                 <item>仅手动触发</item>
                 <item>1 小时巡检</item>
+                <item>6 小时巡检</item>
         </string-array>
 
         <string-array name="cf_opt_scope_entries">

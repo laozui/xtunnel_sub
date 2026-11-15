@@ -537,52 +537,186 @@ public class CfOptimizer {
     private static String lastNetworkType = "";
     private static long lastTriggerTime = 0;
 
+    /* ==================== 周期性重新优选（防 IP 老化） ====================
+     *
+     * 为什么需要它：
+     *   原来只有三个入口会跑优选 —— 启动预热、切网、手动点。只要你不切网、
+     *   不重开 App，它可以一整天一次都不重新选。而选出来的那 N 个 IP 是会老的：
+     *   CF 边缘调度会变、你从城西走到城东基站换了、拥堵时段也变了。
+     *   通道层的降权只能在「已有这几个 IP」之间避让，如果这几个 IP 本身集体变差，
+     *   它换无可换 —— 只能在不都不好的通道之间轮着用，表现就是"能连但慢"，
+     *   而且很难判断原因，容易被当成"今天网络不好"。
+     *
+     * 这里补的就是那个缺失的触发器：按用户选的周期，在后台安静地重选一次。
+     * 优选完若 Top N 变了，现有的 ACTION_SWITCH 平滑热重启逻辑会自动生效（不闪断）；
+     * 若没变，代码里本来就有"最优 IP 集合保持稳定，维持现有连接不闪断"的分支，
+     * 所以白跑一轮也不会有副作用。
+     *
+     * 为什么用「自排下一次」而不是固定间隔 postDelayed：
+     *   优选本身耗时不固定（几秒到几十秒），用固定节拍会有漂移累积；
+     *   每次跑完再排下一次，节拍永远按"上一次结束"算，长跑更稳。
+     */
+
+    /** 周期重选任务句柄。null 表示当前没有排程（自适应/仅手动模式下就是 null）。 */
+    private static Runnable periodicRunnable = null;
+
+    /** 周期重选允许的最小间隔，防呆用（用户乱传 0 或负数不至于把电耗光）。 */
+    private static final long PERIODIC_MIN_INTERVAL_MS = 10 * 60 * 1000;
+
+    /* ---------- 周期模式的哨兵值（Preferences.CF_OPT_INTERVAL 的取值约定） ----------
+     *
+     * 这个字段在 v2.10 之前就存在：界面上有下拉框、值也存进配置了，
+     * 但**后端从来没有读过它来调度** —— 一个只做了一半的功能，选了不生效。
+     * 这里把语义补全，让它变成真功能：
+     *
+     *   INTERVAL_AUTO   = -1  → 自适应模式（推荐）：只靠启动 + 切网触发，不排固定周期
+     *   INTERVAL_MANUAL = -2  → 仅手动触发：连启动预热都不跑
+     *   正数（30/60/120/360 分钟）→ 每 N 分钟后台巡检一次
+     *
+     * 这样既保留老值（正数）的含义，又能表达两个非周期模式。
+     */
+    public static final int INTERVAL_AUTO = -1;
+    public static final int INTERVAL_MANUAL_ONLY = -2;
+
+    /**
+     * 排下一次周期重选。
+     *
+     * @param delayMs 距下一次执行的毫秒数
+     */
+    private static void scheduleNextPeriodic(final Context context, long delayMs) {
+        if (periodicRunnable != null) {
+            schedulerHandler.removeCallbacks(periodicRunnable);
+            periodicRunnable = null;
+        }
+        if (delayMs < PERIODIC_MIN_INTERVAL_MS) {
+            delayMs = PERIODIC_MIN_INTERVAL_MS;
+        }
+        periodicRunnable = () -> {
+            periodicRunnable = null;
+            try {
+                Preferences p = new Preferences(context);
+                /* 用户中途关掉优选、或改成自适应/仅手动，就不再重排。 */
+                if (!p.getCfOptEnabled()) {
+                    return;
+                }
+                /* 只在"要固定周期巡检"的模式下才真的跑。
+                   注意 getCfOptInterval() 返回的是分钟数，<0 是我们约定的
+                   "自适应/仅手动"哨兵值（见 Preferences 注释）。 */
+                long intervalMs = currentPeriodicIntervalMs(p);
+                if (intervalMs <= 0) {
+                    return;
+                }
+                /* 正在优选就跳过这一拍，等下一拍 —— 绝不叠加两个优选任务并发跑。 */
+                if (!isRunning.get()) {
+                    Log.i(TAG, "周期巡检到点，后台重新优选一次（对抗 IP 老化）");
+                    startOptimize(context, false);
+                } else {
+                    Log.i(TAG, "周期巡检到点，但优选正在进行中，跳过本拍");
+                }
+                /* 不管这拍跑没跑，都把下一拍排上，保持节拍。 */
+                scheduleNextPeriodic(context, intervalMs);
+            } catch (Throwable t) {
+                Log.w(TAG, "周期巡检异常: " + t.getMessage());
+                /* 出错也别让链条断掉 —— 否则一次异常就永久失去自愈能力。 */
+                scheduleNextPeriodic(context, PERIODIC_MIN_INTERVAL_MS);
+            }
+        };
+        schedulerHandler.postDelayed(periodicRunnable, delayMs);
+    }
+
+    /**
+     * 把用户选的周期换算成毫秒；返回 0 表示「不需要固定周期巡检」。
+     *
+     * 取值约定（与 Settings 下拉框的语义对齐）：
+     *   -1 / 0 → 自适应模式：只靠启动 + 切网触发，不排固定周期
+     *   -2     → 仅手动触发：连启动预热都不该跑（由调用方判断）
+     *   >0     → 每 N 分钟巡检一次
+     */
+    private static long currentPeriodicIntervalMs(Preferences p) {
+        int minutes = p.getCfOptInterval();
+        if (minutes <= 0) {
+            return 0;
+        }
+        return (long) minutes * 60 * 1000;
+    }
+
     /**
      * 启动自适应网络事件感知优化器
      * - 规则：
      *   1. 启动时执行一次预热优选 (免外部依赖，纯本地高质种子池)
      *   2. 监听系统网络变化 (WiFi <-> 5G/4G 切换时防抖触发)
-     *   3. 连接稳定期间零后台轮询，绝对省电省流，不再频繁微重载！
+     *   3. 若用户选了固定周期，则按周期后台静默巡检一次（对抗 IP 老化）
      */
-    public static void startScheduler(final Context context) {
+    public static synchronized void startScheduler(final Context context) {
         stopScheduler();
 
         final Context appContext = context.getApplicationContext();
         Preferences prefs = new Preferences(appContext);
         if (!prefs.getCfOptEnabled()) return;
 
+        /* 「仅手动触发」模式下不该有启动预热，也不排周期。
+           约定：getCfOptInterval() < 0 表示非固定周期模式（详见 Preferences）。 */
+        final int intervalMin = prefs.getCfOptInterval();
+        final boolean manualOnly = (intervalMin == INTERVAL_MANUAL_ONLY);
+
         // 1. 启动时延迟 2 秒预热优选一次
-        schedulerHandler.postDelayed(() -> {
-            Preferences p = new Preferences(appContext);
-            if (p.getCfOptEnabled()) {
-                Log.i(TAG, "CfOptimizer: 启动预热优选触发...");
-                startOptimize(appContext, false);
-            }
-        }, 2000);
+        if (!manualOnly) {
+            schedulerHandler.postDelayed(() -> {
+                Preferences p = new Preferences(appContext);
+                if (p.getCfOptEnabled()) {
+                    Log.i(TAG, "CfOptimizer: 启动预热优选触发...");
+                    startOptimize(appContext, false);
+                }
+            }, 2000);
+        }
 
         // 1.5 延迟 8 秒检查段池是否已生成。段池只在**首次**自动生成一次，
         //     之后不再自动更新（只手动更新）—— 建完库顺手补跑一轮优选，把新扫到的优质 IP 用起来。
-        schedulerHandler.postDelayed(() -> {
-            Preferences p = new Preferences(appContext);
-            if (!p.getCfOptEnabled()) return;
-            CfIpPool.maybeInitialUpdate(appContext, (success, slot, poolSize, message) -> {
-                Log.i(TAG, "段池首次建库结果: " + message);
-                if (success) {
-                    Preferences p2 = new Preferences(appContext);
-                    if (p2.getCfOptEnabled()) {
-                        startOptimize(appContext, false);
+        //     「仅手动」模式下不做这件事：那个模式承诺了不自动干活。
+        if (!manualOnly) {
+            schedulerHandler.postDelayed(() -> {
+                Preferences p = new Preferences(appContext);
+                if (!p.getCfOptEnabled()) return;
+                if (p.getCfOptInterval() == INTERVAL_MANUAL_ONLY) return;
+                CfIpPool.maybeInitialUpdate(appContext, (success, slot, poolSize, message) -> {
+                    Log.i(TAG, "段池首次建库结果: " + message);
+                    if (success) {
+                        Preferences p2 = new Preferences(appContext);
+                        if (p2.getCfOptEnabled()) {
+                            startOptimize(appContext, false);
+                        }
                     }
-                }
-            });
-        }, 8000);
+                });
+            }, 8000);
+        }
 
         // 2. 注册系统网络变更感知 (WiFi <-> 5G 切换监听)
         registerNetworkWatcher(appContext);
-        Log.i(TAG, "CfOptimizer: 自适应事件驱动优化器已激活 (启动 + 切网触发，稳定期间静默)");
+
+        /* 3. 若选了固定周期，排上第一拍。
+              第一拍不用等满整个周期 —— 启动预热刚刚跑过一轮，等于"已经跑过一次"，
+              所以直接从"一个完整周期后"开始排；这样表现为「每 N 分钟一次」而不是
+              「启动后 N 分钟又一次」的叠加。
+              自适应模式下 currentPeriodicIntervalMs 返回 0，这里什么都不会排。 */
+        long intervalMs = currentPeriodicIntervalMs(prefs);
+        if (!manualOnly && intervalMs > 0) {
+            scheduleNextPeriodic(appContext, intervalMs);
+            Log.i(TAG, "CfOptimizer: 已开启周期巡检（每 " + (intervalMs / 60000)
+                    + " 分钟重新优选一次，对抗 IP 老化）");
+        } else {
+            Log.i(TAG, "CfOptimizer: 自适应事件驱动优化器已激活 (启动 + 切网触发，稳定期间静默)");
+        }
     }
 
     private static synchronized void registerNetworkWatcher(final Context context) {
         try {
+            /* 幂等保护：startScheduler 现在会被 MainActivity 和 TProxyService 各调一次，
+               而每次调用都会 new 一个 callback 覆盖掉旧引用 —— 旧的回调就再也反注册不掉了，
+               系统里会一直挂着若干个僵尸监听。已经注册过就直接返回。 */
+            if (networkCallback != null) {
+                Log.i(TAG, "网络变更监听已存在，跳过重复注册");
+                return;
+            }
             final ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
             if (cm == null) return;
 
@@ -629,6 +763,12 @@ public class CfOptimizer {
             schedulerHandler.postDelayed(() -> {
                 Preferences p = new Preferences(context);
                 if (p.getCfOptEnabled()) {
+                    /* 「仅手动触发」模式下，切网也不该偷偷跑优选 —— 用户明确说了要自己控制。
+                       否则省电省流的选项就形同虚设。 */
+                    if (p.getCfOptInterval() == INTERVAL_MANUAL_ONLY) {
+                        Log.i(TAG, "网络已变更，但当前为「仅手动触发」模式，跳过自动优选");
+                        return;
+                    }
                     /* 换到新分区（比如 WiFi 切到移动卡）时，该分区可能还没有段库 ——
                        有就正常优选；没有才自动建一次库（之后只手动更新）。 */
                     CfIpPool.maybeInitialUpdate(context, (success, s, size, message) -> {
@@ -638,6 +778,14 @@ public class CfOptimizer {
                         }
                     });
                     startOptimize(context, false);
+
+                    /* 切网等于刚刚优选过一轮，所以周期节拍要从现在重新算。
+                       否则会出现"切网优选完刚 10 秒，周期又到点"—— 白跑一轮白耗流量。
+                       自适应模式下这里不排任何东西（intervalMs 为 0）。 */
+                    long intervalMs = currentPeriodicIntervalMs(p);
+                    if (intervalMs > 0) {
+                        scheduleNextPeriodic(context, intervalMs);
+                    }
                 }
             }, 2500);
         }
@@ -659,7 +807,11 @@ public class CfOptimizer {
         stopScheduler();
     }
 
-    public static void stopScheduler() {
+    public static synchronized void stopScheduler() {
+        if (periodicRunnable != null) {
+            schedulerHandler.removeCallbacks(periodicRunnable);
+            periodicRunnable = null;
+        }
         if (schedulerRunnable != null) {
             schedulerHandler.removeCallbacks(schedulerRunnable);
             schedulerRunnable = null;

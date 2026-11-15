@@ -548,8 +548,19 @@ public class Preferences
                 editor.commit();
         }
 
+        /**
+         * 优选周期（分钟）。取值约定见 {@code CfOptimizer}：
+         *   -1 = 自适应模式（推荐，只靠启动 + 切网触发）
+         *   -2 = 仅手动触发
+         *   正数 = 每 N 分钟后台巡检一次（60 / 360）
+         *
+         * ★ 默认值从 60 改为 -1：v2.10.11 之前这个值存了却没人读，
+         *   老用户机器上可能残留 60（当年下拉框默认值）。如果默认仍给 60，
+         *   新装用户会莫名进入"1 小时巡检"，而他们从没主动选过。
+         *   自适应模式是新装用户最省电、最不容易出意外的起点。
+         */
         public int getCfOptInterval() {
-                return prefs.getInt(CF_OPT_INTERVAL, 60);
+                return prefs.getInt(CF_OPT_INTERVAL, -1);
         }
 
         public void setCfOptInterval(int intervalMinutes) {

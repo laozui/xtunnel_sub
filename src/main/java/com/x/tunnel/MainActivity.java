@@ -639,27 +639,49 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // 周期选项: 30分钟(30), 1小时(60), 2小时(120), 6小时(360)
+        // 周期选项与取值必须严格一一对应（顺序即索引）：
+        //   自适应模式(推荐) → -1：只靠启动 + 切网触发，不排固定周期
+        //   仅手动触发       → -2：连启动预热都不跑
+        //   1 小时巡检       → 60 分钟
+        //   6 小时巡检       → 360 分钟
+        // 之前这里是 {30,60,120,360}，和文案（自适应/每次启动/仅手动/1小时）完全错配，
+        // 而且后端从未读取该值 —— 选了等于没选。这次一并修正。
         final String[] intervals = getResources().getStringArray(R.array.cf_opt_interval_entries);
-        final int[] intervalValues = {30, 60, 120, 360};
+        final int[] intervalValues = {
+                CfOptimizer.INTERVAL_AUTO,
+                CfOptimizer.INTERVAL_MANUAL_ONLY,
+                60,
+                360
+        };
         ArrayAdapter<String> intervalAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, intervals);
         dropdownCfOptInterval.setAdapter(intervalAdapter);
 
         int currentInterval = prefs.getCfOptInterval();
-        int selectedIndex = 1; // 默认 1 小时 (60)
+        int selectedIndex = 0; // 默认「自适应模式」（推荐）
+        boolean matched = false;
         for (int i = 0; i < intervalValues.length; i++) {
             if (intervalValues[i] == currentInterval) {
                 selectedIndex = i;
+                matched = true;
                 break;
             }
+        }
+        /* 老版本可能存过 30 / 120 这类已不在选项里的值（当年那个下拉框是摆设，
+           存了也不生效）。这里把它归一化：既改显示，也把配置真正写成 -1，
+           否则会出现"显示自适应、实际却在按旧值巡检"的鬼影。 */
+        if (!matched) {
+            prefs.setCfOptInterval(CfOptimizer.INTERVAL_AUTO);
+            selectedIndex = 0;
         }
         dropdownCfOptInterval.setText(intervals[selectedIndex], false);
         dropdownCfOptInterval.setOnItemClickListener((parent, view, position, id) -> {
             if (position >= 0 && position < intervalValues.length) {
                 prefs.setCfOptInterval(intervalValues[position]);
+                /* 立刻重排调度：startScheduler 内部会先 stopScheduler 再按新周期排。 */
                 if (prefs.getCfOptEnabled()) {
                     CfOptimizer.startScheduler(MainActivity.this);
                 }
+                Toast.makeText(this, "优选周期已设为：" + intervals[position], Toast.LENGTH_SHORT).show();
             }
         });
 

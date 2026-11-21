@@ -394,10 +394,11 @@ public class CfIpPool {
                     }
 
                     // 4.5 ★ 区域兜底广撒（老豆 2026-11-22 定式）：仍不满 200 时，
-                    //     从 CF 官方段广撒，落地目标区域就收（质量差也收），凑满 200。
+                    //     先把首轮探活但没归类查落地的 IP 补查落地（零额外 TCP 成本），
+                    //     不够再从 CF 段广撒，落地目标区域就收（质量差也收），凑满 200。
                     //     避免"线路被误判 → 只选出一两个 IP → 上网很差"。
                     if (regional.size() < POOL_CAPACITY) {
-                        regional = floorUpByRegion(appCtx, regional, bindNet, slot, callback);
+                        regional = floorUpByRegion(appCtx, regional, alive, bindNet, slot, callback);
                     }
 
                     if (regional.isEmpty()) {
@@ -560,6 +561,7 @@ public class CfIpPool {
      * 目标区域按运营商：电信=日本(NRT/KIX/FUK/OKA)、移动=香港(HKG)、其余=日本+香港。
      */
     private static List<IpLatency> floorUpByRegion(Context ctx, List<IpLatency> pool,
+                                                   List<IpLatency> alive,
                                                    Network bindNet, String slot,
                                                    final PoolCallback callback) {
         final long t0 = System.currentTimeMillis();
@@ -568,27 +570,42 @@ public class CfIpPool {
 
         // 目标 POP 集合（按运营商）
         String carrier = CarrierDetect.detect(ctx, slot);
-        java.util.Set<String> targetPops = floorPopsFor(carrier);
-        Log.i(TAG, "区域兜底：运营商=" + carrier + " 目标POP=" + targetPops + " 缺口=" + need);
+        final java.util.Set<String> target = floorPopsFor(carrier);
+        Log.i(TAG, "区域兜底：运营商=" + carrier + " 目标POP=" + target + " 缺口=" + need);
 
         // 已在池里的 IP（去重）
         final java.util.Set<String> inPool = new java.util.HashSet<String>();
         for (IpLatency it : pool) inPool.add(it.ip);
 
-        // 从 CF 官方段广撒采样
-        List<String> samples = sampleSubnetIps(ctx, FLOOR_SAMPLE_COUNT);
-        if (samples.isEmpty()) {
-            Log.w(TAG, "区域兜底：CF 段库采样为空，跳过");
+        /* 候选来源两路：
+           ① 首轮已探活、但没被 classifyByColo 查落地的 IP（从 COLO_MAX_CHECK 之后）。
+              这些确定能连 443，命中率远高于盲采样，且省了重新随机采样不通 IP 的浪费。
+              注意：这些 IP 质量比已入池的稍差（延迟更高）——正合「质量差也收、凑满 200」。
+           ② 若 ① 不够，再从 CF 官方段广撒采样补足候选量。 */
+        final List<String> candidates = new ArrayList<String>();
+        if (alive != null && alive.size() > COLO_MAX_CHECK) {
+            for (int i = COLO_MAX_CHECK; i < alive.size() && candidates.size() < FLOOR_SAMPLE_COUNT; i++) {
+                String ip = alive.get(i).ip;
+                if (inPool.add(ip)) candidates.add(ip);
+            }
+        }
+        if (candidates.size() < FLOOR_SAMPLE_COUNT) {
+            List<String> extraSamples = sampleSubnetIps(ctx, FLOOR_SAMPLE_COUNT - candidates.size());
+            for (String ip : extraSamples) {
+                if (inPool.add(ip)) candidates.add(ip);
+            }
+        }
+        if (candidates.isEmpty()) {
+            Log.w(TAG, "区域兜底：无可用候选 IP，跳过");
             return pool;
         }
-        Log.i(TAG, "区域兜底：广撒 " + samples.size() + " 个样本，实测落地补 " + need + " 个");
+        Log.i(TAG, "区域兜底：候选 " + candidates.size() + " 个（优先复用已探活），查落地补 " + need + " 个");
 
-        final java.util.Set<String> target = targetPops;
         final AtomicBoolean stop = new AtomicBoolean(false);
         final java.util.List<IpLatency> extra = java.util.Collections.synchronizedList(new java.util.ArrayList<IpLatency>());
         ExecutorService poolExec = Executors.newFixedThreadPool(FLOOR_CONCURRENCY);
-        final CountDownLatch latch = new CountDownLatch(samples.size());
-        for (final String ip : samples) {
+        final CountDownLatch latch = new CountDownLatch(candidates.size());
+        for (final String ip : candidates) {
             poolExec.execute(new Runnable() {
                 @Override public void run() {
                     try {
@@ -598,9 +615,7 @@ public class CfIpPool {
                         ColoProbe cp = probeColoEx(ip, bindNet);
                         if (cp == null || cp.colo == null) return;
                         if (!target.contains(cp.colo)) return;
-                        synchronized (inPool) {
-                            if (!inPool.add(ip)) return;
-                        }
+                        // inPool 已预加全部候选，这里只靠 stop + extra 计数去重即可
                         extra.add(new IpLatency(ip, cp.latencyMs));
                         if (extra.size() >= need) stop.set(true);
                     } catch (Throwable ignored) {
@@ -610,7 +625,7 @@ public class CfIpPool {
                 }
             });
         }
-        try { latch.await(90, TimeUnit.SECONDS); } catch (Throwable ignored) { }
+        try { latch.await(120, TimeUnit.SECONDS); } catch (Throwable ignored) { }
         poolExec.shutdownNow();
 
         if (extra.isEmpty()) {

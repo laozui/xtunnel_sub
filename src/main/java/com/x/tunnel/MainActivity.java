@@ -15,10 +15,13 @@ import android.text.TextWatcher;
 import android.view.HapticFeedbackConstants;
 import android.view.MenuItem;
 import android.view.View;
+import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.AutoCompleteTextView;
+import android.widget.Button;
 import android.widget.EditText;
 import android.widget.PopupMenu;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -102,6 +105,12 @@ public class MainActivity extends AppCompatActivity {
     private TextView textCfPoolSim1;
     private TextView textCfPoolSim2;
     private MaterialButton buttonUpdateCfPool;
+    // 每槽运营商锁定（老豆 2026-11-22）
+    private Spinner spinnerCarrierWifi;
+    private Spinner spinnerCarrierSim1;
+    private Spinner spinnerCarrierSim2;
+    private Button buttonResetSlotLock;
+    private boolean initializingCarrierSpinners = true;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -176,6 +185,10 @@ public class MainActivity extends AppCompatActivity {
         textCfPoolSim1 = findViewById(R.id.text_cf_pool_sim1);
         textCfPoolSim2 = findViewById(R.id.text_cf_pool_sim2);
         buttonUpdateCfPool = findViewById(R.id.button_update_cf_pool);
+        spinnerCarrierWifi = findViewById(R.id.spinner_carrier_wifi);
+        spinnerCarrierSim1 = findViewById(R.id.spinner_carrier_sim1);
+        spinnerCarrierSim2 = findViewById(R.id.spinner_carrier_sim2);
+        buttonResetSlotLock = findViewById(R.id.button_reset_slot_lock);
 
         setupTabLayout();
         setupSubscriptionUi();
@@ -529,7 +542,81 @@ public class MainActivity extends AppCompatActivity {
     /**
      * 本地可用 IP 池（WiFi / 卡槽1 / 卡槽2 三分区）界面初始化。
      */
+    /** 运营商偏好字符串 ↔ Spinner 位置：0=auto 1=telecom 2=mobile 3=other */
+    private static int carrierPos(String c) {
+        if (LockedCidrPool.CARRIER_TELECOM.equals(c)) return 1;
+        if (LockedCidrPool.CARRIER_MOBILE.equals(c)) return 2;
+        if (LockedCidrPool.CARRIER_OTHER.equals(c)) return 3;
+        return 0;
+    }
+    private static String carrierVal(int pos) {
+        switch (pos) {
+            case 1: return LockedCidrPool.CARRIER_TELECOM;
+            case 2: return LockedCidrPool.CARRIER_MOBILE;
+            case 3: return LockedCidrPool.CARRIER_OTHER;
+            default: return LockedCidrPool.CARRIER_AUTO;
+        }
+    }
+
+    /** 三个槽的运营商锁定 Spinner + 恢复出厂按钮（老豆 2026-11-22 定式） */
+    private void setupSlotCarrierSpinners() {
+        try {
+            String[] labels = getResources().getStringArray(R.array.slot_carrier_entries);
+            final android.widget.Spinner[] spinners = {spinnerCarrierWifi, spinnerCarrierSim1, spinnerCarrierSim2};
+            final String[] slots = {CfIpPool.SLOT_WIFI, CfIpPool.SLOT_SIM1, CfIpPool.SLOT_SIM2};
+            for (int i = 0; i < spinners.length; i++) {
+                ArrayAdapter<String> ad = new ArrayAdapter<String>(this,
+                        android.R.layout.simple_spinner_item, labels);
+                ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+                spinners[i].setAdapter(ad);
+                spinners[i].setSelection(carrierPos(prefs.getSlotCarrier(slots[i])));
+            }
+            AdapterView.OnItemSelectedListener listener = new AdapterView.OnItemSelectedListener() {
+                @Override public void onItemSelected(AdapterView<?> parent, View view, int pos, long id) {
+                    if (initializingCarrierSpinners) return;
+                    int idx = -1;
+                    if (parent == spinnerCarrierWifi) idx = 0;
+                    else if (parent == spinnerCarrierSim1) idx = 1;
+                    else if (parent == spinnerCarrierSim2) idx = 2;
+                    if (idx < 0) return;
+                    String carrier = carrierVal(pos);
+                    prefs.setSlotCarrier(slots[idx], carrier);
+                    // 选定电信/移动即自动启用该槽锁定；选自动/其他则关闭锁定走原逻辑
+                    boolean lock = LockedCidrPool.CARRIER_TELECOM.equals(carrier)
+                                || LockedCidrPool.CARRIER_MOBILE.equals(carrier);
+                    prefs.setSlotLockEnable(slots[idx], lock);
+                    String msg = lock
+                            ? ("已锁定 " + CfIpPool.slotDisplayName(slots[idx]) + " → " + (pos == 1 ? "电信NRT段" : "移动HKG段") + "，点「更新 IP 池」生效")
+                            : ("已设为 " + labels[pos] + "（自动检测）");
+                    Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show();
+                }
+                @Override public void onNothingSelected(AdapterView<?> parent) { }
+            };
+            for (Spinner s : spinners) s.setOnItemSelectedListener(listener);
+            initializingCarrierSpinners = false;
+
+            buttonResetSlotLock.setOnClickListener(v ->
+                new AlertDialog.Builder(MainActivity.this)
+                    .setTitle("恢复出厂")
+                    .setMessage("清除三个卡槽的运营商锁定和自动积累的 colo 段，回到初始种子段。确定吗？")
+                    .setPositiveButton("确定", (d, w) -> {
+                        for (String slot : slots) prefs.resetSlotLock(slot);
+                        initializingCarrierSpinners = true;
+                        for (int i = 0; i < spinners.length; i++) {
+                            spinners[i].setSelection(0);
+                        }
+                        initializingCarrierSpinners = false;
+                        Toast.makeText(MainActivity.this, R.string.toast_slot_reset, Toast.LENGTH_SHORT).show();
+                    })
+                    .setNegativeButton("取消", null)
+                    .show());
+        } catch (Throwable t) {
+            android.util.Log.w("MainActivity", "运营商选择初始化失败: " + t.getMessage());
+        }
+    }
+
     private void setupCfPoolUi() {
+        setupSlotCarrierSpinners();
         buttonUpdateCfPool.setOnClickListener(v -> {
             if (CfIpPool.isScanning()) {
                 Toast.makeText(this, "段池正在更新中，请稍候…", Toast.LENGTH_SHORT).show();

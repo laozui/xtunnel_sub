@@ -73,6 +73,14 @@ public class Preferences
         public static final String CF_POOL_DATE_PREFIX = "CfPoolDate_";
         public static final int CF_POOL_CAPACITY = 200;
 
+        /* ★ 每槽运营商偏好（老豆 2026-11-22 定式，三槽各记各的）：
+           auto=自动识别 / telecom=电信(硬锁NRT段) / mobile=移动(硬锁HKG段) / other=其他。
+           手动选定后无视本机落地检测结果，强行用所选运营商的锁定段集穷举优选。
+           每槽还有一份自己攒的 colo 段集（落地验证命中累计），只增不减，可一键恢复出厂。 */
+        public static final String SLOT_CARRIER_PREFIX = "SlotCarrier_";   // + slot
+        public static final String SLOT_COLO_CIDRS_PREFIX = "SlotColoCIDRs_"; // + slot, CSV of /24
+        public static final String SLOT_LOCK_ENABLE_PREFIX = "SlotLockEnable_"; // + slot, boolean
+
         private SharedPreferences prefs;
         private String currentProfileId;
 
@@ -762,5 +770,42 @@ public class Preferences
                 SharedPreferences.Editor editor = prefs.edit();
                 editor.putInt(PROFILE_LATENCY_PREFIX + profileId, latency);
                 editor.apply();
+        }
+
+        // ================= 每槽运营商偏好 + colo 段集（老豆 2026-11-22 锁定段方案） =================
+        /** 运营商偏好：auto（默认）/ telecom / mobile / other */
+        public String getSlotCarrier(String slot) {
+                return prefs.getString(SLOT_CARRIER_PREFIX + slot, "auto");
+        }
+
+        public void setSlotCarrier(String slot, String carrier) {
+                prefs.edit().putString(SLOT_CARRIER_PREFIX + slot, carrier == null ? "auto" : carrier).commit();
+        }
+
+        /** 是否启用锁定段优选（关闭则走原来的自动检测+区域兜底） */
+        public boolean getSlotLockEnable(String slot) {
+                return prefs.getBoolean(SLOT_LOCK_ENABLE_PREFIX + slot, false);
+        }
+
+        public void setSlotLockEnable(String slot, boolean enable) {
+                prefs.edit().putBoolean(SLOT_LOCK_ENABLE_PREFIX + slot, enable).commit();
+        }
+
+        /** 该槽自己攒的 colo 段集（逗号分隔的 /24）；空=还没有自动积累，用种子段 */
+        public String getSlotColoCidrs(String slot) {
+                return prefs.getString(SLOT_COLO_CIDRS_PREFIX + slot, "");
+        }
+
+        public void setSlotColoCidrs(String slot, String cidrsCsv) {
+                prefs.edit().putString(SLOT_COLO_CIDRS_PREFIX + slot, cidrsCsv == null ? "" : cidrsCsv).commit();
+        }
+
+        /** 恢复出厂：清掉某槽的运营商偏好与自攒 colo 段集 */
+        public void resetSlotLock(String slot) {
+                SharedPreferences.Editor e = prefs.edit();
+                e.remove(SLOT_CARRIER_PREFIX + slot);
+                e.remove(SLOT_LOCK_ENABLE_PREFIX + slot);
+                e.remove(SLOT_COLO_CIDRS_PREFIX + slot);
+                e.commit();
         }
 }

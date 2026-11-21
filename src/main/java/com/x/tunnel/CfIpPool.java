@@ -364,6 +364,36 @@ public class CfIpPool {
                     List<String> oldPool = parseCsv(prefs.getCfPool(slot));
                     Log.i(TAG, "开始更新 " + slotName + " IP 池（旧池 " + oldPool.size() + " 个）");
 
+                    /* ★★ 锁定段快速路径（老豆 2026-11-22 定式）：
+                       该槽手动选了电信/移动 → 无视落地检测，直接在锁定段内枚举全部 IP 纯测速，
+                       15~30 秒出结果。探不够则自然落到下面的常规流程降级（区域兜底广撒）。 */
+                    if (LockedCidrPool.shouldLock(prefs, slot)) {
+                        String carrier = prefs.getSlotCarrier(slot);
+                        List<String> lockCidrs = LockedCidrPool.effectiveCidrs(prefs, slot, carrier);
+                        Log.i(TAG, "锁定段优选：slot=" + slot + " 运营商=" + carrier + " 段数=" + lockCidrs.size());
+                        Network bindNetLock = getUnderlyingNetwork(appCtx);
+                        List<String> lockedIps = LockedCidrPool.probeLockedFast(
+                                lockCidrs, bindNetLock, POOL_CAPACITY, callback);
+                        if (!lockedIps.isEmpty()) {
+                            String nowStrL = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
+                            String dateStrL = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
+                            prefs.setCfPool(slot, joinCsv(lockedIps));
+                            prefs.setCfPoolTime(slot, nowStrL);
+                            prefs.setCfPoolDate(slot, dateStrL);
+                            size = lockedIps.size();
+                            ok = true;
+                            message = "锁定段优选 " + slotName + "：" + size + " 个（" + carrier + "，穷举纯测速）";
+                            Log.i(TAG, message);
+                            // 锁定段成功也要重建段库，让优选引擎有候选复测
+                            CfCidrLib.rebuildFromCache(appCtx, slot);
+                        } else {
+                            // 锁定段一个都探不到 → 不写空池，降级走下面常规流程
+                            Log.w(TAG, "锁定段穷举无结果，降级到常规区域扫描");
+                        }
+                    }
+
+                    // 锁定成功(ok=true)则跳过常规流程；未锁定或锁定无结果都走这里降级广撒
+                    if (!ok) {
                     // 1. 候选只用子网库随机采样，不掺旧池：区域策略已收敛到 日/港/新，
                     //    旧池里可能混着已排除的区域，带进来只会污染池子。
                     List<String> candidates = new ArrayList<>();
@@ -423,11 +453,27 @@ public class CfIpPool {
                         //    之后每次优选只复测这些段的代表 IP，2~5 秒就能出新榜单。
                         int libN = CfCidrLib.rebuildFromCache(appCtx, slot);
 
+                        // 6.5 ★ 自攒 colo 段集：本轮问出落地且属目标区域的 /24，给该槽记一笔。
+                        //     攒够 3 次才纳入（防偶发漂移），每槽独立、只增不减，可一键恢复出厂。
+                        String autoCarrier = prefs.getSlotCarrier(slot);
+                        if (LockedCidrPool.CARRIER_AUTO.equals(autoCarrier) || autoCarrier.isEmpty()) {
+                            autoCarrier = CarrierDetect.detect(appCtx, slot); // 自动档用检测值定目标区域
+                        }
+                        final String recCarrier = autoCarrier;
+                        java.util.Set<String> recordedCidr = new java.util.HashSet<String>();
+                        for (java.util.Map.Entry<String, String> ce : COLO_CACHE.entrySet()) {
+                            String c24 = ce.getKey().substring(0, ce.getKey().lastIndexOf('.'));
+                            if (!recordedCidr.add(c24)) continue; // 每个 /24 每轮只记一次，避免瞬间攒满
+                            LockedCidrPool.recordColoHit(appCtx, prefs, slot,
+                                    ce.getKey(), ce.getValue(), recCarrier);
+                        }
+
                         size = merged.size();
                         ok = true;
                         message = "已更新 " + slotName + "：IP " + size + " 个 · 段库 " + libN + " 段";
                         Log.i(TAG, message + "（整池换新，旧池 " + oldPool.size() + " 个已废弃）");
                     }
+                    } // end if (!ok) 常规流程
 
                 } catch (Throwable t) {
                     message = "IP 池更新异常: " + t.getMessage();

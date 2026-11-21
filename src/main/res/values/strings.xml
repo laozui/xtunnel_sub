@@ -162,6 +162,17 @@
         <string name="toast_cf_pool_done">IP 池已更新：%1$s 共 %2$d 个可用 IP</string>
         <string name="toast_cf_pool_failed">IP 池更新失败：%1$s</string>
 
+        <!-- ★ 每槽运营商选择 + 锁定段（老豆 2026-11-22） -->
+        <string name="slot_carrier_hint">运营商锁定（WiFi / 卡1 / 卡2）：选定后无视自动检测，用专属段池穷举优选</string>
+        <string name="slot_carrier_reset">恢复出厂（清除锁定与自攒段）</string>
+        <string-array name="slot_carrier_entries">
+                <item>自动识别</item>
+                <item>电信</item>
+                <item>移动</item>
+                <item>其他</item>
+        </string-array>
+        <string name="toast_slot_reset">已恢复出厂：三个卡槽的运营商锁定与自攒段已清除</string>
+
         <string-array name="cf_opt_interval_entries">
                 <item>自适应模式 (推荐)</item>
                 <item>仅手动触发</item>

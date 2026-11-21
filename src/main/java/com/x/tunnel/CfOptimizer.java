@@ -267,14 +267,36 @@ public class CfOptimizer {
         String slot = CfIpPool.detectSlot(context);
         String[] carrierOut = new String[1];
         int want = Math.max(12, targetN * 4);
+
+        /* ★★ 锁定段模式（老豆 2026-11-22）：该槽手动锁了电信/移动，
+           本地池里的 200 个就是刚才穷举锁定的 IP —— 直接置顶作为候选池主力，
+           不让段库实时候选把它们挤掉（段库是自动检测产物，锁定模式下不可信）。 */
+        boolean locked = LockedCidrPool.shouldLock(prefs, slot);
+        if (locked) {
+            List<String> localFirst = CfIpPool.getMergedPool(context, prefs);
+            final int lockCap = Math.max(120, want * 3);
+            for (String ip : localFirst) {
+                if (pool.size() >= lockCap) break;
+                if (!pool.contains(ip)) pool.add(ip);
+            }
+            Log.i(TAG, "候选池来源: ★锁定段本地池置顶 " + pool.size() + " 个（无视段库自动检测）");
+            if (carrierOut[0] == null || carrierOut[0].isEmpty()) {
+                carrierOut[0] = prefs.getSlotCarrier(slot);
+            }
+        }
+
         List<String> picked = CfCidrLib.pickTop(context, slot, want, bindNet, carrierOut);
         if (!picked.isEmpty()) {
-            pool.addAll(picked);
+            // 锁定模式：段库候选只是备用，最多补 20 个置后；非锁定模式照旧全量合并。
+            int addLimit = locked ? Math.min(20, picked.size()) : picked.size();
+            for (int i = 0; i < addLimit; i++) {
+                if (!pool.contains(picked.get(i))) pool.add(picked.get(i));
+            }
             try {
                 prefs.setWanCarrier(carrierOut[0]);
             } catch (Throwable ignored) { }
             Log.i(TAG, "候选池来源: 段池实时优选（"
-                    + CarrierDetect.summary(carrierOut[0]) + "）共 " + pool.size() + " 个");
+                    + CarrierDetect.summary(carrierOut[0]) + "）本轮取 " + addLimit + " 个");
         }
         /* ★ 兜底改为「合并」而非「互斥」（老豆 2026-11-22 定式）
            旧逻辑：段池只要产出 1~2 个，就直接拿去精测，完全忽略本地那 200 个 IP 表——

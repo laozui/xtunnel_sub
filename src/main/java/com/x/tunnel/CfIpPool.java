@@ -66,6 +66,13 @@ public class CfIpPool {
     private static final int FILL_CIDR_COUNT = 5;
     private static final int FILL_PER_CIDR = 40;
 
+    /* ★ 区域兜底广撒（老豆 2026-11-22 定式）：线路被误判、正常只选出一两个 IP 时，
+       从 CF 官方段广撒，实测落地属目标区域就收，【不设延迟门槛、允许同段多个】，
+       凑满 POOL_CAPACITY。宁可要一池质量差的，也不要一两个好的却不够并发用。
+       目标区域按运营商：电信=日本(NRT系)、移动=香港(HKG)、其他=日本+香港（老豆实测只有这俩好用）。 */
+    private static final int FLOOR_SAMPLE_COUNT = 4000;
+    private static final int FLOOR_CONCURRENCY = 32;
+
     /* 扫描参数：手机上兼顾速度与耗电，单次随机采样 1200 个子网 + 64 路并发 */
     private static final int SCAN_MAX_SUBNETS = 6534;
     private static final int SCAN_CONCURRENCY = 64;
@@ -386,6 +393,13 @@ public class CfIpPool {
                         regional = fillUpByCidr(regional, bindNet, callback);
                     }
 
+                    // 4.5 ★ 区域兜底广撒（老豆 2026-11-22 定式）：仍不满 200 时，
+                    //     从 CF 官方段广撒，落地目标区域就收（质量差也收），凑满 200。
+                    //     避免"线路被误判 → 只选出一两个 IP → 上网很差"。
+                    if (regional.size() < POOL_CAPACITY) {
+                        regional = floorUpByRegion(appCtx, regional, bindNet, slot, callback);
+                    }
+
                     if (regional.isEmpty()) {
                         message = "未探测到可用 IP，请检查当前网络连通性";
                         Log.w(TAG, message);
@@ -533,6 +547,108 @@ public class CfIpPool {
                 + " 个（新增 " + extra.size() + " 候选），耗时 "
                 + (System.currentTimeMillis() - t0) + "ms");
         return out;
+    }
+
+    /**
+     * ★ 区域兜底广撒（老豆 2026-11-22 定式）
+     *
+     * 场景：线路被误判为「三地混合」等情况下，正常优选只选出一两个 IP，上网很差。
+     * 策略：从 CF 官方段广撒采样，实测落地属于目标区域就收——
+     *   · 不设延迟门槛（质量差也收，宁要一池次的，不要一两个好的却不够并发用）
+     *   · 允许同一个 /24 出多个（突破「每段留 1 个」限制，否则凑不满 200）
+     *   · 凑满 POOL_CAPACITY 即停，已在池里的 IP 不重复收
+     * 目标区域按运营商：电信=日本(NRT/KIX/FUK/OKA)、移动=香港(HKG)、其余=日本+香港。
+     */
+    private static List<IpLatency> floorUpByRegion(Context ctx, List<IpLatency> pool,
+                                                   Network bindNet, String slot,
+                                                   final PoolCallback callback) {
+        final long t0 = System.currentTimeMillis();
+        final int need = POOL_CAPACITY - pool.size();
+        if (need <= 0) return pool;
+
+        // 目标 POP 集合（按运营商）
+        String carrier = CarrierDetect.detect(ctx, slot);
+        java.util.Set<String> targetPops = floorPopsFor(carrier);
+        Log.i(TAG, "区域兜底：运营商=" + carrier + " 目标POP=" + targetPops + " 缺口=" + need);
+
+        // 已在池里的 IP（去重）
+        final java.util.Set<String> inPool = new java.util.HashSet<String>();
+        for (IpLatency it : pool) inPool.add(it.ip);
+
+        // 从 CF 官方段广撒采样
+        List<String> samples = sampleSubnetIps(ctx, FLOOR_SAMPLE_COUNT);
+        if (samples.isEmpty()) {
+            Log.w(TAG, "区域兜底：CF 段库采样为空，跳过");
+            return pool;
+        }
+        Log.i(TAG, "区域兜底：广撒 " + samples.size() + " 个样本，实测落地补 " + need + " 个");
+
+        final java.util.Set<String> target = targetPops;
+        final AtomicBoolean stop = new AtomicBoolean(false);
+        final java.util.List<IpLatency> extra = java.util.Collections.synchronizedList(new java.util.ArrayList<IpLatency>());
+        ExecutorService poolExec = Executors.newFixedThreadPool(FLOOR_CONCURRENCY);
+        final CountDownLatch latch = new CountDownLatch(samples.size());
+        for (final String ip : samples) {
+            poolExec.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        if (stop.get()) return;
+                        // probeColoEx 一次 TLS + /cdn-cgi/trace 同时拿落地 POP 和握手延迟，
+                        // 并绑定底层网络——VPN 在线时不绑会测到隧道质量，整批作废。
+                        ColoProbe cp = probeColoEx(ip, bindNet);
+                        if (cp == null || cp.colo == null) return;
+                        if (!target.contains(cp.colo)) return;
+                        synchronized (inPool) {
+                            if (!inPool.add(ip)) return;
+                        }
+                        extra.add(new IpLatency(ip, cp.latencyMs));
+                        if (extra.size() >= need) stop.set(true);
+                    } catch (Throwable ignored) {
+                    } finally {
+                        latch.countDown();
+                    }
+                }
+            });
+        }
+        try { latch.await(90, TimeUnit.SECONDS); } catch (Throwable ignored) { }
+        poolExec.shutdownNow();
+
+        if (extra.isEmpty()) {
+            Log.w(TAG, "区域兜底：本机线路未探到目标区域 IP，保留原池");
+            return pool;
+        }
+
+        // 合并：现有池 + 兜底候选，按延迟排序，裁到 200
+        List<IpLatency> all = new ArrayList<IpLatency>(pool);
+        all.addAll(extra);
+        Collections.sort(all, new Comparator<IpLatency>() {
+            @Override public int compare(IpLatency x, IpLatency y) {
+                return Float.compare(x.latency, y.latency);
+            }
+        });
+        List<IpLatency> out = new ArrayList<IpLatency>();
+        java.util.Set<String> used = new java.util.HashSet<String>();
+        for (IpLatency it : all) {
+            if (out.size() >= POOL_CAPACITY) break;
+            if (used.add(it.ip)) out.add(it);
+        }
+        Log.i(TAG, "区域兜底完成：" + pool.size() + " -> " + out.size()
+                + " 个（新增 " + extra.size() + " 个目标区域 IP，含质量较差的），耗时 "
+                + (System.currentTimeMillis() - t0) + "ms");
+        return out;
+    }
+
+    /** 区域兜底目标 POP：电信=日本全家族、移动=香港、其余=日本+香港（老豆实测只有这俩好用） */
+    private static java.util.Set<String> floorPopsFor(String carrier) {
+        java.util.Set<String> s = new java.util.HashSet<String>();
+        if (CarrierDetect.TELECOM.equals(carrier)) {
+            s.add("NRT"); s.add("KIX"); s.add("FUK"); s.add("OKA");
+        } else if (CarrierDetect.MOBILE.equals(carrier)) {
+            s.add("HKG");
+        } else {
+            s.add("NRT"); s.add("KIX"); s.add("FUK"); s.add("OKA"); s.add("HKG");
+        }
+        return s;
     }
 
     /* ======================= 落地 POP 归类（区域感知优选） =======================

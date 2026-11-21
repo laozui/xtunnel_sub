@@ -276,23 +276,29 @@ public class CfOptimizer {
             Log.i(TAG, "候选池来源: 段池实时优选（"
                     + CarrierDetect.summary(carrierOut[0]) + "）共 " + pool.size() + " 个");
         }
-        if (pool.isEmpty()) {
-            /* 兜底第一顺位：离线池（历史长期优选留下的最佳 50 个）。
-               它比全量扫出来的临时池更稳定，所以排在本地池前面，照样要过初筛+精测。 */
-            List<String> offline = OfflinePool.load(context);
-            if (!offline.isEmpty()) {
-                pool.addAll(offline);
-                Log.i(TAG, "候选池来源: 离线兜底池（历史最优）共 " + pool.size() + " 个");
-            }
+        /* ★ 兜底改为「合并」而非「互斥」（老豆 2026-11-22 定式）
+           旧逻辑：段池只要产出 1~2 个，就直接拿去精测，完全忽略本地那 200 个 IP 表——
+           这正是「线路被误判 → 段池只选出一两个 → 上网很差」的根因。
+           新逻辑：离线池 + 本地 IP 池（已按目标区域兜底补足到 200）一律合并进来
+           一起参与初筛/精测，去重后补足到 want。段池新鲜候选排前面优先。 */
+        final int poolTarget = Math.max(want, 60);
+        /* 离线池（历史长期优选留下的最佳 50 个）合并补足 */
+        List<String> offline = OfflinePool.load(context);
+        int offAdded = 0;
+        for (String ip : offline) {
+            if (pool.size() >= poolTarget) break;
+            if (!pool.contains(ip)) { pool.add(ip); offAdded++; }
         }
-        if (pool.isEmpty()) {
-            List<String> localPool = CfIpPool.getMergedPool(context, prefs);
-            if (!localPool.isEmpty()) {
-                pool.addAll(localPool);
-                Log.i(TAG, "候选池来源: 本地 IP 池（三分区合并）共 " + pool.size() + " 个");
-            }
+        if (offAdded > 0) Log.i(TAG, "候选池合并: 离线兜底池新增 " + offAdded + " 个");
+        /* 本地 IP 池（三分区合并，含区域兜底）合并补足 */
+        List<String> localPool = CfIpPool.getMergedPool(context, prefs);
+        int localAdded = 0;
+        for (String ip : localPool) {
+            if (pool.size() >= poolTarget) break;
+            if (!pool.contains(ip)) { pool.add(ip); localAdded++; }
         }
-        // 本地池为空（首次安装 / 从未更新过 / 段库未生成）时，退回内置种子库兜底
+        if (localAdded > 0) Log.i(TAG, "候选池合并: 本地 IP 池新增 " + localAdded + " 个（目标区域兜底）");
+        // 一个都没有（首次安装 / 从未更新过 / 段库未生成）时，退回内置种子库兜底
         if (pool.isEmpty()) {
             for (String ip : BUILTIN_CF_IPS) {
                 if (!pool.contains(ip)) pool.add(ip);

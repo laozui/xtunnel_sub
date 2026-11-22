@@ -768,13 +768,35 @@ public class CfIpPool {
     }
 
     /**
+     * ★ 展示专用查落地：绑定底层网络（老豆 2026-11-22 反馈 v2.10.17 bug）。
+     * 旧版 coloOf 走裸 probeColo（不绑网），VPN 在线时查询 socket 掉进隧道，
+     * 从美西出口查 /cdn-cgi/trace → 黄金 IP 误显示 LAX 或干脆无 colo。
+     * 这里复用 probeColoEx(ip,bindNet) 绑定真实本地线路，结果与池扫描一致。
+     */
+    static String coloOfBound(String ip, Network bindNet) {
+        if (ip == null || ip.isEmpty()) return null;
+        /* ★ 强制绑网重探、不读旧缓存：COLO_CACHE 里可能有扫描阶段用裸 probeColo
+           （不绑网、隧道在线时从 LAX 出口查）写入的错误落地，直接读会一直显示 LAX。
+           重探成功会由 probeColoEx 覆盖缓存；重探失败返回 null（界面不显示标签），
+           好过显示一个错误的 LAX。黄金 IP 只有 3~6 个，重探开销可忽略。 */
+        ColoProbe cp = probeColoEx(ip, bindNet);
+        return cp == null ? null : cp.colo;
+    }
+
+    /**
      * 批量查落地 POP（并发，4 路），返回与入参等长的数组，探不到的位置为 null。
      * N 通常只有 3~5 个，最坏耗时约一个超时周期。
      */
     static String[] colosOf(java.util.List<String> ips) {
+        return colosOf(ips, null);
+    }
+
+    /** ★ 绑定底层网络的批量落地查询，供界面黄金 IP 展示用（VPN 在线也不走隧道） */
+    static String[] colosOf(java.util.List<String> ips, Network bindNet) {
         if (ips == null || ips.isEmpty()) return new String[0];
         final String[] out = new String[ips.size()];
         final CountDownLatch latch = new CountDownLatch(ips.size());
+        final Network net = bindNet;
         ExecutorService pool = Executors.newFixedThreadPool(Math.min(4, ips.size()));
         for (int i = 0; i < ips.size(); i++) {
             final int idx = i;
@@ -782,7 +804,7 @@ public class CfIpPool {
             pool.execute(new Runnable() {
                 @Override public void run() {
                     try {
-                        out[idx] = coloOf(ip);
+                        out[idx] = (net != null) ? coloOfBound(ip, net) : coloOf(ip);
                     } catch (Throwable ignored) {
                     } finally {
                         latch.countDown();

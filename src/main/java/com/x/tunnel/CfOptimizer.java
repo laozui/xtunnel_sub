@@ -483,7 +483,8 @@ public class CfOptimizer {
         if (pickCount > 0) {
             java.util.List<String> ips = new ArrayList<String>(pickCount);
             for (int i = 0; i < pickCount; i++) ips.add(topCandidates.get(i).ip);
-            String[] colos = CfIpPool.colosOf(ips);
+            // ★ 绑定底层网络查落地：VPN 在线时不走隧道，避免黄金 IP 误显示 LAX/无标识
+            String[] colos = CfIpPool.colosOf(ips, bindNet);
             for (int i = 0; i < pickCount; i++) {
                 if (i > 0) sbDisp.append(",");
                 sbDisp.append(ips.get(i));

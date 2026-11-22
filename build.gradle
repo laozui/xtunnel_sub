@@ -10,8 +10,8 @@ android {
         applicationId "com.x.tunnel"
         minSdk 21
         targetSdk 34
-        versionCode 37
-        versionName "2.10.16-pat-lock"
+        versionCode 38
+        versionName "2.10.17-pat-lockfix"
 
         ndk {
             abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'

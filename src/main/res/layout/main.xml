@@ -619,11 +619,23 @@
                                 android:textColor="@color/xt_text_secondary"
                                 android:textSize="11sp" />
 
+                            <!-- ★ 三槽运营商下拉：改为每槽独立一行 + 左侧文字标签，
+                                 旧版三个 Spinner 横向 weight=1 平分，每个只剩箭头、看不到选中值。 -->
                             <LinearLayout
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginTop="4dp"
+                                android:layout_marginTop="6dp"
+                                android:gravity="center_vertical"
                                 android:orientation="horizontal">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginEnd="6dp"
+                                    android:minWidth="44dp"
+                                    android:text="@string/slot_label_wifi"
+                                    android:textColor="@color/xt_text_secondary"
+                                    android:textSize="13sp" />
 
                                 <Spinner
                                     android:id="@+id/spinner_carrier_wifi"
@@ -631,6 +643,23 @@
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
                                     android:spinnerMode="dropdown" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="4dp"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginEnd="6dp"
+                                    android:minWidth="44dp"
+                                    android:text="@string/slot_label_sim1"
+                                    android:textColor="@color/xt_text_secondary"
+                                    android:textSize="13sp" />
 
                                 <Spinner
                                     android:id="@+id/spinner_carrier_sim1"
@@ -638,6 +667,23 @@
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
                                     android:spinnerMode="dropdown" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="4dp"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginEnd="6dp"
+                                    android:minWidth="44dp"
+                                    android:text="@string/slot_label_sim2"
+                                    android:textColor="@color/xt_text_secondary"
+                                    android:textSize="13sp" />
 
                                 <Spinner
                                     android:id="@+id/spinner_carrier_sim2"

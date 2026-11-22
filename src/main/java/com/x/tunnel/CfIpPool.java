@@ -151,10 +151,18 @@ public class CfIpPool {
 
     /**
      * 在 VPN 在线时回溯真实底层承载：优先 WiFi（系统默认优先无线局域网），否则取蜂窝。
+     *
+     * ★★ 修复（老豆 2026-11-22 反馈 v2.10.16 bug）：
+     * 旧版对每个底层网络都要求 NET_CAPABILITY_INTERNET，但 VPN 建立后系统把默认路由
+     * 交给 VPN，底层 WiFi 往往不再宣称 INTERNET 能力 → 被 continue 跳过 → 只剩蜂窝，
+     * 于是「家里用 WiFi 却被判成卡槽2（移动）」，锁定电信却枚举出移动段 1778 个 IP。
+     * 新逻辑： VPN 回溯场景下放宽 INTERNET 硬性要求，只要带 VALIDATED/INTERNET 任一
+     * 或干脆只有对应 TRANSPORT 就收；按 WiFi > 蜂窝 > 其他的优先级返回，WiFi 命中即止。
      */
     private static NetPick findUnderlying(ConnectivityManager cm) {
         NetPick wifi = null;
-        NetPick cellular = null;
+        NetPick cellularDefault = null;   // 默认数据卡所在蜂窝
+        NetPick cellularAny = null;       // 任意蜂窝兜底
         NetPick other = null;
         try {
             Network[] all = cm.getAllNetworks();
@@ -163,14 +171,20 @@ public class CfIpPool {
                 NetworkCapabilities c = cm.getNetworkCapabilities(n);
                 if (c == null) continue;
                 if (c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue;
-                if (!c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue;
+                // ★ 不再硬卡 INTERNET：VPN 会剥夺底层 WiFi 的这个 capability
                 NetPick pick = new NetPick();
                 pick.network = n;
                 pick.caps = c;
                 if (c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-                    wifi = pick;
+                    if (wifi == null) wifi = pick;
                 } else if (c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
-                    cellular = pick;
+                    // 蜂窝可能有两张卡：优先选默认数据卡对应的那条，避免遍历顺序导致落到卡2
+                    if (c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                            || c.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                        if (cellularDefault == null) cellularDefault = pick;
+                    } else if (cellularAny == null) {
+                        cellularAny = pick;
+                    }
                 } else if (other == null) {
                     other = pick;
                 }
@@ -179,7 +193,8 @@ public class CfIpPool {
             Log.w(TAG, "回溯底层网络失败: " + t.getMessage());
         }
         if (wifi != null) return wifi;
-        if (cellular != null) return cellular;
+        if (cellularDefault != null) return cellularDefault;
+        if (cellularAny != null) return cellularAny;
         return other;
     }
 

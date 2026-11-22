@@ -172,6 +172,9 @@
                 <item>其他</item>
         </string-array>
         <string name="toast_slot_reset">已恢复出厂：三个卡槽的运营商锁定与自攒段已清除</string>
+        <string name="slot_label_wifi">WiFi　　</string>
+        <string name="slot_label_sim1">卡槽1　</string>
+        <string name="slot_label_sim2">卡槽2　</string>
 
         <string-array name="cf_opt_interval_entries">
                 <item>自适应模式 (推荐)</item>

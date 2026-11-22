@@ -272,20 +272,27 @@ public class CfOptimizer {
            本地池里的 200 个就是刚才穷举锁定的 IP —— 直接置顶作为候选池主力，
            不让段库实时候选把它们挤掉（段库是自动检测产物，锁定模式下不可信）。 */
         boolean locked = LockedCidrPool.shouldLock(prefs, slot);
+        final String lockedCarrier = locked ? prefs.getSlotCarrier(slot) : null;
         if (locked) {
-            List<String> localFirst = CfIpPool.getMergedPool(context, prefs);
-            final int lockCap = Math.max(120, want * 3);
-            for (String ip : localFirst) {
-                if (pool.size() >= lockCap) break;
-                if (!pool.contains(ip)) pool.add(ip);
+            /* ★★ 修复（老豆 2026-11-22 反馈 v2.10.16 bug）：只用【当前槽专属池】。
+               旧版用 getMergedPool 把三槽池合并——WiFi 锁电信时，卡槽2 的移动段 IP
+               会被塞进候选池，于是枚举出 1778 个（移动段数量）而非电信的 2540。
+               锁定模式 = 该槽完全独立，绝不跨槽混合。 */
+            String slotCsv = prefs.getCfPool(slot);
+            if (slotCsv != null && !slotCsv.isEmpty()) {
+                for (String ip : slotCsv.split(",")) {
+                    ip = ip.trim();
+                    if (!ip.isEmpty() && !pool.contains(ip)) pool.add(ip);
+                }
             }
-            Log.i(TAG, "候选池来源: ★锁定段本地池置顶 " + pool.size() + " 个（无视段库自动检测）");
-            if (carrierOut[0] == null || carrierOut[0].isEmpty()) {
-                carrierOut[0] = prefs.getSlotCarrier(slot);
-            }
+            Log.i(TAG, "候选池来源: ★锁定段本地池(仅 " + slot + ") " + pool.size() + " 个（不跨槽混合）");
+            carrierOut[0] = lockedCarrier;
         }
 
         List<String> picked = CfCidrLib.pickTop(context, slot, want, bindNet, carrierOut);
+        /* ★★ 修复：pickTop 内部会把自动检测的运营商写进 carrierOut[0]，
+           锁定模式下必须改回手动锁定的值，否则界面「线路」会显示自动检测的"中国移动"。 */
+        if (locked) carrierOut[0] = lockedCarrier;
         if (!picked.isEmpty()) {
             // 锁定模式：段库候选只是备用，最多补 20 个置后；非锁定模式照旧全量合并。
             int addLimit = locked ? Math.min(20, picked.size()) : picked.size();
@@ -297,29 +304,33 @@ public class CfOptimizer {
             } catch (Throwable ignored) { }
             Log.i(TAG, "候选池来源: 段池实时优选（"
                     + CarrierDetect.summary(carrierOut[0]) + "）本轮取 " + addLimit + " 个");
+        } else if (locked) {
+            // 段库没产出时也把手动锁定运营商写回，保证界面「线路」显示一致
+            try { prefs.setWanCarrier(lockedCarrier); } catch (Throwable ignored) { }
         }
-        /* ★ 兜底改为「合并」而非「互斥」（老豆 2026-11-22 定式）
-           旧逻辑：段池只要产出 1~2 个，就直接拿去精测，完全忽略本地那 200 个 IP 表——
-           这正是「线路被误判 → 段池只选出一两个 → 上网很差」的根因。
-           新逻辑：离线池 + 本地 IP 池（已按目标区域兜底补足到 200）一律合并进来
-           一起参与初筛/精测，去重后补足到 want。段池新鲜候选排前面优先。 */
+        /* ★ 非锁定模式才做「合并」兜底（老豆 2026-11-22 定式）
+           旧逻辑：段池只要产出 1~2 个，就直接拿去精测，完全忽略本地那 200 个 IP 表。
+           新逻辑：离线池 + 本地 IP 池（已按目标区域兜底补足到 200）一律合并进来。
+           ★ 锁定模式跳过这一步——否则会把其他槽的 IP 混进来，破坏"该槽专属段"语义。 */
         final int poolTarget = Math.max(want, 60);
-        /* 离线池（历史长期优选留下的最佳 50 个）合并补足 */
-        List<String> offline = OfflinePool.load(context);
-        int offAdded = 0;
-        for (String ip : offline) {
-            if (pool.size() >= poolTarget) break;
-            if (!pool.contains(ip)) { pool.add(ip); offAdded++; }
+        if (!locked) {
+            /* 离线池（历史长期优选留下的最佳 50 个）合并补足 */
+            List<String> offline = OfflinePool.load(context);
+            int offAdded = 0;
+            for (String ip : offline) {
+                if (pool.size() >= poolTarget) break;
+                if (!pool.contains(ip)) { pool.add(ip); offAdded++; }
+            }
+            if (offAdded > 0) Log.i(TAG, "候选池合并: 离线兜底池新增 " + offAdded + " 个");
+            /* 本地 IP 池（三分区合并，含区域兜底）合并补足 */
+            List<String> localPool = CfIpPool.getMergedPool(context, prefs);
+            int localAdded = 0;
+            for (String ip : localPool) {
+                if (pool.size() >= poolTarget) break;
+                if (!pool.contains(ip)) { pool.add(ip); localAdded++; }
+            }
+            if (localAdded > 0) Log.i(TAG, "候选池合并: 本地 IP 池新增 " + localAdded + " 个（目标区域兜底）");
         }
-        if (offAdded > 0) Log.i(TAG, "候选池合并: 离线兜底池新增 " + offAdded + " 个");
-        /* 本地 IP 池（三分区合并，含区域兜底）合并补足 */
-        List<String> localPool = CfIpPool.getMergedPool(context, prefs);
-        int localAdded = 0;
-        for (String ip : localPool) {
-            if (pool.size() >= poolTarget) break;
-            if (!pool.contains(ip)) { pool.add(ip); localAdded++; }
-        }
-        if (localAdded > 0) Log.i(TAG, "候选池合并: 本地 IP 池新增 " + localAdded + " 个（目标区域兜底）");
         // 一个都没有（首次安装 / 从未更新过 / 段库未生成）时，退回内置种子库兜底
         if (pool.isEmpty()) {
             for (String ip : BUILTIN_CF_IPS) {

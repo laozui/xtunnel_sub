@@ -110,7 +110,6 @@ public class MainActivity extends AppCompatActivity {
     private Spinner spinnerCarrierSim1;
     private Spinner spinnerCarrierSim2;
     private Button buttonResetSlotLock;
-    private boolean initializingCarrierSpinners = true;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -573,13 +572,16 @@ public class MainActivity extends AppCompatActivity {
             }
             AdapterView.OnItemSelectedListener listener = new AdapterView.OnItemSelectedListener() {
                 @Override public void onItemSelected(AdapterView<?> parent, View view, int pos, long id) {
-                    if (initializingCarrierSpinners) return;
                     int idx = -1;
                     if (parent == spinnerCarrierWifi) idx = 0;
                     else if (parent == spinnerCarrierSim1) idx = 1;
                     else if (parent == spinnerCarrierSim2) idx = 2;
                     if (idx < 0) return;
                     String carrier = carrierVal(pos);
+                    /* ★ 修复初始化时序：Spinner 在 setAdapter/setSelection 时会立即回调一次
+                       onItemSelected；旧版靠 boolean 标志拦截，但该回调可能异步到达、标志
+                       已被重置 → 用"值是否真的变化"判断，值没变就绝不写、绝不弹 Toast。 */
+                    if (carrier.equals(prefs.getSlotCarrier(slots[idx]))) return;
                     prefs.setSlotCarrier(slots[idx], carrier);
                     // 选定电信/移动即自动启用该槽锁定；选自动/其他则关闭锁定走原逻辑
                     boolean lock = LockedCidrPool.CARRIER_TELECOM.equals(carrier)
@@ -593,7 +595,6 @@ public class MainActivity extends AppCompatActivity {
                 @Override public void onNothingSelected(AdapterView<?> parent) { }
             };
             for (Spinner s : spinners) s.setOnItemSelectedListener(listener);
-            initializingCarrierSpinners = false;
 
             buttonResetSlotLock.setOnClickListener(v ->
                 new AlertDialog.Builder(MainActivity.this)
@@ -601,11 +602,9 @@ public class MainActivity extends AppCompatActivity {
                     .setMessage("清除三个卡槽的运营商锁定和自动积累的 colo 段，回到初始种子段。确定吗？")
                     .setPositiveButton("确定", (d, w) -> {
                         for (String slot : slots) prefs.resetSlotLock(slot);
-                        initializingCarrierSpinners = true;
                         for (int i = 0; i < spinners.length; i++) {
                             spinners[i].setSelection(0);
                         }
-                        initializingCarrierSpinners = false;
                         Toast.makeText(MainActivity.this, R.string.toast_slot_reset, Toast.LENGTH_SHORT).show();
                     })
                     .setNegativeButton("取消", null)

@@ -4,16 +4,17 @@
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
+    <!-- 齿轮：8 齿外轮廓 + 中心轴孔（线描风格，与其余三个导航图标一致） -->
     <path
         android:fillColor="@android:color/transparent"
-        android:pathData="M12 8.5 A3.5 3.5 0 1 1 12 15.5 A3.5 3.5 0 1 1 12 8.5"
+        android:pathData="M12.00 4.70 L13.34 2.49 L15.90 3.23 L15.87 5.81 L17.16 6.84 L19.67 6.22 L20.96 8.56 L19.11 10.36 L19.30 12.00 L21.51 13.34 L20.77 15.90 L18.19 15.87 L17.16 17.16 L17.78 19.67 L15.44 20.96 L13.64 19.11 L12.00 19.30 L10.66 21.51 L8.10 20.77 L8.13 18.19 L6.84 17.16 L4.33 17.78 L3.04 15.44 L4.89 13.64 L4.70 12.00 L2.49 10.66 L3.23 8.10 L5.81 8.13 L6.84 6.84 L6.22 4.33 L8.56 3.04 L10.36 4.89 Z"
         android:strokeColor="#FF5B6B62"
         android:strokeWidth="1.7"
         android:strokeLineCap="round"
         android:strokeLineJoin="round" />
     <path
         android:fillColor="@android:color/transparent"
-        android:pathData="M12 2 V4 M12 20 V22 M2 12 H4 M20 12 H22 M4.9 4.9 L6.3 6.3 M17.7 17.7 L19.1 19.1 M19.1 4.9 L17.7 6.3 M6.3 17.7 L4.9 19.1"
+        android:pathData="M12 8.8 A3.2 3.2 0 1 1 12 15.2 A3.2 3.2 0 1 1 12 8.8"
         android:strokeColor="#FF5B6B62"
         android:strokeWidth="1.7"
         android:strokeLineCap="round"

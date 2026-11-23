@@ -202,7 +202,7 @@
         <string name="nav_config">配置</string>
         <string name="nav_optimize">优选</string>
         <string name="nav_settings">设置</string>
-        <string name="dash_version">v2.10.19</string>
+        <string name="dash_version">v2.10.20</string>
         <string name="dash_latency">延迟</string>
         <string name="dash_nodes">节点数</string>
         <string name="dash_upload">本次上传</string>
@@ -217,7 +217,10 @@
         <string name="dash_proxy_mode">代理模式</string>
         <string name="dash_proxy_hint">断开后切换</string>
         <string name="dash_proxy_desc">勾选＝全局代理，不勾＝分应用代理</string>
-        <string name="dash_traffic_cleared">累计流量已清零</string>
+        <string name="dash_traffic_cleared">累计流量已清零</string>
+        <string name="dash_manage_apps">管理应用列表</string>
+        <string name="dash_live_fmt">实时 ↑%1$s/s · ↓%2$s/s · 更新 %3$s</string>
+        <string name="dash_stats_unavailable">统计源未就绪（原生层未加载）</string>
         <string name="dash_no_data">--</string>
         <string name="dash_node_count_fmt">%1$d 个节点</string>
         <string name="dash_pool_info_fmt">IP 池 %1$d · 自愈 %2$d 次</string>

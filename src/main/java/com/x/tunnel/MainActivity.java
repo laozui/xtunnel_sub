@@ -84,14 +84,22 @@ public class MainActivity extends AppCompatActivity {
     private TextView textTotalDownload;
     private TextView textDashFooter;
     private View layoutTrafficCard;
+    private TextView textDashUploadUnit;
+    private TextView textDashDownloadUnit;
+    private TextView textDashLive;
+    private boolean statsAvailable = true;
+    private long lastSampleMs = 0L;
+    private long prevTx = 0L;
+    private long prevRx = 0L;
     private final Handler dashHandler = new Handler(Looper.getMainLooper());
     private boolean dashTicking = false;
     private final Runnable dashTick = new Runnable() {
         @Override
         public void run() {
             if (!dashTicking) return;
-            if (currentTab == TAB_CONNECT) refreshDashboard();
-            dashHandler.postDelayed(this, 2000);
+            /* 始终采样累计流量（切到别的栏目也不漏算），UI 只在连接页刷新 */
+            refreshDashboard();
+            dashHandler.postDelayed(this, 1000);
         }
     };
 
@@ -206,6 +214,9 @@ public class MainActivity extends AppCompatActivity {
         textTotalUpload = findViewById(R.id.text_total_upload);
         textTotalDownload = findViewById(R.id.text_total_download);
         textDashFooter = findViewById(R.id.text_dash_footer);
+        textDashUploadUnit = findViewById(R.id.text_dash_upload_unit);
+        textDashDownloadUnit = findViewById(R.id.text_dash_download_unit);
+        textDashLive = findViewById(R.id.text_dash_live);
         layoutTrafficCard = findViewById(R.id.layout_traffic_card);
 
         // 绑定节点页控件
@@ -453,6 +464,7 @@ public class MainActivity extends AppCompatActivity {
         long totalTx = sp.getLong(K_TOTAL_TX, 0L);
         long totalRx = sp.getLong(K_TOTAL_RX, 0L);
         if (lastTx >= 0) {
+            if (tx == lastTx && rx == lastRx) return;   /* 没流量就别写盘 */
             /* tx 变小说明原生层重启过、计数从 0 重来，这一轮的 tx 本身就是增量 */
             totalTx += (tx >= lastTx) ? (tx - lastTx) : tx;
             totalRx += (rx >= lastRx) ? (rx - lastRx) : rx;
@@ -464,18 +476,43 @@ public class MainActivity extends AppCompatActivity {
     private void refreshDashboard() {
         if (textDashUpload == null || prefs == null) return;
         long tx = 0, rx = 0;
+        statsAvailable = true;
         try {
             long[] st = TProxyService.nativeStats();
             if (st != null && st.length >= 4) {
                 tx = st[1];
                 rx = st[3];
+            } else {
+                statsAvailable = false;
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            statsAvailable = false;
+            android.util.Log.w("pat-dash", "nativeStats unavailable: " + t);
+        }
         accumulateTraffic(tx, rx);
 
+        long now = System.currentTimeMillis();
+        double upRate = 0, downRate = 0;
+        if (lastSampleMs > 0 && tx >= prevTx && rx >= prevRx && now > lastSampleMs) {
+            double sec = (now - lastSampleMs) / 1000.0;
+            upRate = (tx - prevTx) / sec;
+            downRate = (rx - prevRx) / sec;
+        }
+        lastSampleMs = now;
+        prevTx = tx;
+        prevRx = rx;
+
+        /* 不在连接页时只采样、不刷 UI，省电 */
+        if (currentTab != TAB_CONNECT) return;
+
+        String[] up = splitBytes(tx);
+        String[] down = splitBytes(rx);
+        textDashUpload.setText(up[0]);
+        textDashUploadUnit.setText(up[1]);
+        textDashDownload.setText(down[0]);
+        textDashDownloadUnit.setText(down[1]);
+
         android.content.SharedPreferences sp = dashSp();
-        textDashUpload.setText(String.format(Locale.US, "%.1f", tx / 1048576.0));
-        textDashDownload.setText(String.format(Locale.US, "%.1f", rx / 1048576.0));
         textTotalUpload.setText(formatBytes(sp.getLong(K_TOTAL_TX, 0L)));
         textTotalDownload.setText(formatBytes(sp.getLong(K_TOTAL_RX, 0L)));
 
@@ -498,6 +535,30 @@ public class MainActivity extends AppCompatActivity {
         long since = sp.getLong(K_SINCE, System.currentTimeMillis());
         String date = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date(since));
         textDashFooter.setText(getString(R.string.dash_footer_fmt, date, heals));
+
+        if (textDashLive != null) {
+            if (!statsAvailable) {
+                textDashLive.setText(R.string.dash_stats_unavailable);
+            } else {
+                String clock = new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date(now));
+                textDashLive.setText(getString(R.string.dash_live_fmt,
+                        formatRate(upRate), formatRate(downRate), clock));
+            }
+        }
+    }
+
+    /** 本次会话字节数拆成「数字 + 单位」，小流量也能看见跳动，不再固定 MB 一位小数。 */
+    private static String[] splitBytes(long b) {
+        if (b < 1024L) return new String[]{String.valueOf(b), "B"};
+        if (b < 1048576L) return new String[]{String.format(Locale.US, "%.1f", b / 1024.0), "KB"};
+        if (b < 1073741824L) return new String[]{String.format(Locale.US, "%.1f", b / 1048576.0), "MB"};
+        return new String[]{String.format(Locale.US, "%.2f", b / 1073741824.0), "GB"};
+    }
+
+    private static String formatRate(double bps) {
+        if (bps < 1024.0) return String.format(Locale.US, "%.0f B", bps);
+        if (bps < 1048576.0) return String.format(Locale.US, "%.1f KB", bps / 1024.0);
+        return String.format(Locale.US, "%.1f MB", bps / 1048576.0);
     }
 
     private static String formatBytes(long b) {

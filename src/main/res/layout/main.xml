@@ -280,6 +280,7 @@
                             android:textStyle="bold" />
 
                         <TextView
+                            android:id="@+id/text_dash_upload_unit"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:text="@string/dash_unit_mb"
@@ -309,6 +310,7 @@
                             android:textStyle="bold" />
 
                         <TextView
+                            android:id="@+id/text_dash_download_unit"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:text="@string/dash_unit_mb"
@@ -412,6 +414,14 @@
                         </LinearLayout>
 
                         <TextView
+                            android:id="@+id/text_dash_live"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:textColor="@color/xt_accent"
+                            android:textSize="11sp" />
+
+                        <TextView
                             android:id="@+id/text_dash_footer"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
@@ -445,46 +455,75 @@
                             android:textSize="11sp" />
                     </LinearLayout>
 
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:layout_marginBottom="8dp"
-                        android:background="@drawable/bg_mode_bar"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal"
-                        android:paddingStart="16dp"
-                        android:paddingTop="6dp"
-                        android:paddingEnd="12dp"
-                        android:paddingBottom="6dp">
-
-                        <TextView
-                            android:layout_width="0dp"
+                        <LinearLayout
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="@string/dash_proxy_desc"
-                            android:textColor="@color/xt_text_secondary"
-                            android:textSize="12sp" />
+                            android:layout_marginTop="8dp"
+                            android:layout_marginBottom="8dp"
+                            android:background="@drawable/bg_mode_bar"
+                            android:orientation="vertical"
+                            android:paddingStart="16dp"
+                            android:paddingTop="6dp"
+                            android:paddingEnd="12dp"
+                            android:paddingBottom="6dp">
 
-                        <com.google.android.material.materialswitch.MaterialSwitch
-                            android:id="@+id/switch_global"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/global"
-                            android:textSize="12sp" />
+                            <!-- 关＝分应用代理（左），开＝全局代理（右）：文字与开关状态对齐 -->
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
 
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/button_manage_apps"
-                            style="@style/Widget.Material3.Button.TextButton"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:minWidth="0dp"
-                            android:paddingStart="6dp"
-                            android:paddingEnd="6dp"
-                            android:text="@string/apps"
-                            android:textColor="@color/xt_accent"
-                            android:textSize="12sp" />
-                    </LinearLayout>
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="@string/apps"
+                                    android:textColor="@color/xt_text_secondary"
+                                    android:textSize="12sp" />
+
+                                <com.google.android.material.materialswitch.MaterialSwitch
+                                    android:id="@+id/switch_global"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content" />
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="6dp"
+                                    android:text="@string/global"
+                                    android:textColor="@color/xt_text_secondary"
+                                    android:textSize="12sp" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="@string/dash_proxy_desc"
+                                    android:textColor="@color/xt_text_secondary"
+                                    android:textSize="11sp" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/button_manage_apps"
+                                    style="@style/Widget.Material3.Button.TextButton"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:minWidth="0dp"
+                                    android:paddingStart="6dp"
+                                    android:paddingEnd="6dp"
+                                    android:text="@string/dash_manage_apps"
+                                    android:textColor="@color/xt_accent"
+                                    android:textSize="12sp" />
+                            </LinearLayout>
+                        </LinearLayout>
                 </LinearLayout>
             </androidx.core.widget.NestedScrollView>
         </LinearLayout>
@@ -850,14 +889,16 @@
                                     android:spinnerMode="dropdown" />
                             </LinearLayout>
 
-                            <Button
+                            <com.google.android.material.button.MaterialButton
                                 android:id="@+id/button_reset_slot_lock"
-                                android:layout_width="wrap_content"
-                                android:layout_height="32dp"
-                                android:layout_marginTop="6dp"
+                                style="@style/Widget.Material3.Button.TonalButton"
+                                android:layout_width="match_parent"
+                                android:layout_height="44dp"
+                                android:layout_marginTop="10dp"
+                                android:singleLine="true"
                                 android:text="@string/slot_carrier_reset"
-                                android:textSize="11sp"
-                                style="?android:attr/buttonStyleSmall" />
+                                android:textSize="13sp"
+                                app:cornerRadius="10dp" />
                         </LinearLayout>
 
                         <com.google.android.material.button.MaterialButton

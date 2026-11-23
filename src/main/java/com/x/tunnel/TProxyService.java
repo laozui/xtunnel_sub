@@ -103,13 +103,16 @@ public class TProxyService extends VpnService {
                     scheduleNetworkHeal("底层网络恢复");
                 }
             };
-            /* ★ 关键：排除 VPN 网络本身。否则我们自己 establish() 出新 TUN 时
-               又会收到一次 onAvailable，形成「重建 -> 又重建」的无限循环。
-               Android 里 VPN 是用 TRANSPORT_VPN 标识的（没有 NET_CAPABILITY_VPN 这个常量），
-               所以用 removeTransport，不是 removeCapability。 */
+            /* ★ 关键：只订阅物理承载网络（WiFi / 蜂窝 / 以太网），把 VPN 自己排除掉。
+               否则我们 establish() 出新 TUN 时又会收到一次 onAvailable，
+               形成「重建 -> 又重建」的无限循环。
+               用 transport 白名单而不是 removeCapability：Android 没有 NET_CAPABILITY_VPN
+               这个常量，VPN 是靠 TRANSPORT_VPN 标识的；白名单写法最直白也最保险。 */
             android.net.NetworkRequest req = new android.net.NetworkRequest.Builder()
                     .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .removeTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)
+                    .addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                    .addTransportType(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)
+                    .addTransportType(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
                     .build();
             cm.registerNetworkCallback(req, networkHealCallback);
             networkWatcherSince = System.currentTimeMillis();

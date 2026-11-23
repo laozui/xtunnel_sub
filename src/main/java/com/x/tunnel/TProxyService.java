@@ -74,6 +74,103 @@ public class TProxyService extends VpnService {
         private final java.util.concurrent.atomic.AtomicBoolean healInProgress =
                 new java.util.concurrent.atomic.AtomicBoolean(false);
 
+        /* ★ v2.10.19：底层物理网络切换监听。
+           症状：切网（WiFi<->蜂窝、基站重注册、开关飞行模式）后，wss/smux 长连接
+           可能仍绑在旧底层 Network 上变成「半开」——Go 内核心跳照刷、原生字节照涨，
+           看门狗因此判成「单站问题」永不重连，用户只能手动开一次飞行模式强制重连。
+           这里只监听物理网络（明确排除 VPN 自己），切网后主动触发一次现成的深度重连。 */
+        private android.net.ConnectivityManager.NetworkCallback networkHealCallback = null;
+        private final Handler networkHealHandler = new Handler(Looper.getMainLooper());
+        private Runnable pendingNetworkHeal = null;
+        private long lastNetworkHealAt = 0L;
+        private long networkWatcherSince = 0L;
+
+    /* ==================== 切网自动重建隧道（v2.10.19） ==================== */
+    private void registerNetworkHealWatcher() {
+        if (networkHealCallback != null) return;   // 幂等：重建隧道时会再调一次 startService()
+        try {
+            final android.net.ConnectivityManager cm =
+                    (android.net.ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return;
+            networkHealCallback = new android.net.ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onLost(android.net.Network network) {
+                    scheduleNetworkHeal("底层网络断开");
+                }
+
+                @Override
+                public void onAvailable(android.net.Network network) {
+                    scheduleNetworkHeal("底层网络恢复");
+                }
+            };
+            /* ★ 关键：排除 VPN 网络本身。否则我们自己 establish() 出新 TUN 时
+               又会收到一次 onAvailable，形成「重建 -> 又重建」的无限循环。 */
+            android.net.NetworkRequest req = new android.net.NetworkRequest.Builder()
+                    .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .removeCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VPN)
+                    .build();
+            cm.registerNetworkCallback(req, networkHealCallback);
+            networkWatcherSince = System.currentTimeMillis();
+            Log.i("xtunnel", "底层网络切换监听已注册（切网将自动重建隧道）");
+        } catch (Throwable t) {
+            Log.w("xtunnel", "注册底层网络监听失败: " + t.getMessage());
+            networkHealCallback = null;
+        }
+    }
+
+    private void unregisterNetworkHealWatcher() {
+        if (pendingNetworkHeal != null) {
+            networkHealHandler.removeCallbacks(pendingNetworkHeal);
+            pendingNetworkHeal = null;
+        }
+        if (networkHealCallback == null) return;
+        try {
+            android.net.ConnectivityManager cm =
+                    (android.net.ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) cm.unregisterNetworkCallback(networkHealCallback);
+        } catch (Throwable ignored) {}
+        networkHealCallback = null;
+    }
+
+    private void scheduleNetworkHeal(final String reason) {
+        /* 一次切网会连着来好几发 onLost / onAvailable，合并成 2.5 秒后的一次重建 */
+        if (pendingNetworkHeal != null) {
+            networkHealHandler.removeCallbacks(pendingNetworkHeal);
+        }
+        pendingNetworkHeal = new Runnable() {
+            @Override
+            public void run() {
+                pendingNetworkHeal = null;
+                Preferences p = new Preferences(TProxyService.this);
+                if (!p.getEnable() || tunFd == null) {
+                    return;   // 用户已主动断开，别自作主张把它连回来
+                }
+                long now = System.currentTimeMillis();
+                /* 刚启动的 8 秒内不响应：VPN 建立本身会牵动底层网络状态，别自己踢自己 */
+                if (networkWatcherSince > 0L && now - networkWatcherSince < 8000) {
+                    return;
+                }
+                if (now - lastNetworkHealAt < 10000) {
+                    Log.i("xtunnel", "切网重建冷却中，跳过（" + reason + "）");
+                    return;
+                }
+                if (healInProgress.get()) {
+                    Log.i("xtunnel", "已有深度重连在跑，跳过切网重建");
+                    return;
+                }
+                lastNetworkHealAt = now;
+                Log.w("xtunnel", "检测到" + reason + "，主动重建隧道（修复半开长连接）");
+                try {
+                    startService(new Intent(TProxyService.this, TProxyService.class)
+                            .setAction(ACTION_HEAL));
+                } catch (Throwable t) {
+                    Log.w("xtunnel", "切网重建发起失败: " + t.getMessage());
+                }
+            }
+        };
+        networkHealHandler.postDelayed(pendingNetworkHeal, 2500);
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_DISCONNECT.equals(intent.getAction())) {
@@ -109,6 +206,7 @@ public class TProxyService extends VpnService {
 
     @Override
     public void onDestroy() {
+        unregisterNetworkHealWatcher();
         super.onDestroy();
     }
 
@@ -307,6 +405,9 @@ public class TProxyService extends VpnService {
 		} catch (Throwable t) {
 			Log.w("xtunnel", "启动优选调度器失败: " + t.getMessage());
 		}
+
+		/* ★ 挂上切网监听（幂等）。VPN 服务长期存活，挂这里才不会随界面回收而断链。 */
+		registerNetworkHealWatcher();
 	}
 
     /**
@@ -582,6 +683,8 @@ public class TProxyService extends VpnService {
     }
 
     public void stopService() {
+        /* 用户主动断开：撤掉切网监听，否则断开瞬间的 onLost 会把它又连回来 */
+        unregisterNetworkHealWatcher();
         /* 先停看门狗：避免它在我们主动断开的过程中又触发一次深度重连。 */
         try { TunnelWatchdog.stop(); } catch (Throwable t) { }
         try { stopDiagnosticsLogger(); } catch (Throwable t) { }

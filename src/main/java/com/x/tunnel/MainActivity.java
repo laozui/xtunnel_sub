@@ -5,6 +5,8 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.PorterDuff;
+import android.graphics.drawable.GradientDrawable;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.Bundle;
@@ -20,6 +22,7 @@ import android.widget.ArrayAdapter;
 import android.widget.AutoCompleteTextView;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.PopupMenu;
 import android.widget.Spinner;
 import android.widget.TextView;
@@ -35,7 +38,6 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.materialswitch.MaterialSwitch;
-import com.google.android.material.tabs.TabLayout;
 import com.google.android.material.textfield.TextInputEditText;
 
 import java.text.SimpleDateFormat;
@@ -52,11 +54,46 @@ public class MainActivity extends AppCompatActivity {
     private Preferences prefs;
     private ProfileAdapter adapter;
 
-    // TabLayout 与页面容器
-    private TabLayout tabLayout;
-    private View layoutTabNodes;
-    private View layoutTabSubscription;
-    private View layoutBottomBar;
+    /* ★ v2.10.19：底部四栏导航与页面容器（原顶部 2 个 TabLayout 已退休） */
+    private static final int TAB_CONNECT = 0;
+    private static final int TAB_CONFIG = 1;
+    private static final int TAB_OPTIMIZE = 2;
+    private static final int TAB_SETTINGS = 3;
+    private int currentTab = TAB_CONNECT;
+    private View[] tabPages;
+    private View[] navItems;
+    private View[] navWraps;
+    private ImageView[] navIcons;
+    private TextView[] navLabels;
+
+    /* 连接页仪表盘：所有数值都来自真实数据源，没有占位假数字 */
+    private static final String DASH_SP = "pat_dashboard";
+    private static final String K_TOTAL_TX = "total_tx";
+    private static final String K_TOTAL_RX = "total_rx";
+    private static final String K_LAST_TX = "last_tx";
+    private static final String K_LAST_RX = "last_rx";
+    private static final String K_SINCE = "since";
+    private View statusDot;
+    private TextView textDashNodeCount;
+    private TextView textDashPoolInfo;
+    private TextView textDashLatency;
+    private TextView textDashNodes;
+    private TextView textDashUpload;
+    private TextView textDashDownload;
+    private TextView textTotalUpload;
+    private TextView textTotalDownload;
+    private TextView textDashFooter;
+    private View layoutTrafficCard;
+    private final Handler dashHandler = new Handler(Looper.getMainLooper());
+    private boolean dashTicking = false;
+    private final Runnable dashTick = new Runnable() {
+        @Override
+        public void run() {
+            if (!dashTicking) return;
+            if (currentTab == TAB_CONNECT) refreshDashboard();
+            dashHandler.postDelayed(this, 2000);
+        }
+    };
 
     // 节点页控件
     private TextView textStatusValue;
@@ -134,11 +171,42 @@ public class MainActivity extends AppCompatActivity {
 
         prefs = new Preferences(this);
 
-        // 绑定 TabLayout 与主要容器
-        tabLayout = findViewById(R.id.tab_layout);
-        layoutTabNodes = findViewById(R.id.layout_tab_nodes);
-        layoutTabSubscription = findViewById(R.id.layout_tab_subscription);
-        layoutBottomBar = findViewById(R.id.layout_bottom_bar);
+        // ★ v2.10.19：绑定四栏页面容器与底部导航
+        tabPages = new View[]{
+                findViewById(R.id.layout_tab_connect),
+                findViewById(R.id.layout_tab_config),
+                findViewById(R.id.layout_tab_optimize),
+                findViewById(R.id.layout_tab_settings)
+        };
+        navItems = new View[]{
+                findViewById(R.id.nav_connect), findViewById(R.id.nav_config),
+                findViewById(R.id.nav_optimize), findViewById(R.id.nav_settings)
+        };
+        navWraps = new View[]{
+                findViewById(R.id.nav_wrap_connect), findViewById(R.id.nav_wrap_config),
+                findViewById(R.id.nav_wrap_optimize), findViewById(R.id.nav_wrap_settings)
+        };
+        navIcons = new ImageView[]{
+                findViewById(R.id.nav_icon_connect), findViewById(R.id.nav_icon_config),
+                findViewById(R.id.nav_icon_optimize), findViewById(R.id.nav_icon_settings)
+        };
+        navLabels = new TextView[]{
+                findViewById(R.id.nav_label_connect), findViewById(R.id.nav_label_config),
+                findViewById(R.id.nav_label_optimize), findViewById(R.id.nav_label_settings)
+        };
+
+        // 连接页仪表盘控件
+        statusDot = findViewById(R.id.status_dot);
+        textDashNodeCount = findViewById(R.id.text_dash_node_count);
+        textDashPoolInfo = findViewById(R.id.text_dash_pool_info);
+        textDashLatency = findViewById(R.id.text_dash_latency);
+        textDashNodes = findViewById(R.id.text_dash_nodes);
+        textDashUpload = findViewById(R.id.text_dash_upload);
+        textDashDownload = findViewById(R.id.text_dash_download);
+        textTotalUpload = findViewById(R.id.text_total_upload);
+        textTotalDownload = findViewById(R.id.text_total_download);
+        textDashFooter = findViewById(R.id.text_dash_footer);
+        layoutTrafficCard = findViewById(R.id.layout_traffic_card);
 
         // 绑定节点页控件
         textStatusValue = findViewById(R.id.text_status_value);
@@ -189,7 +257,8 @@ public class MainActivity extends AppCompatActivity {
         spinnerCarrierSim2 = findViewById(R.id.spinner_carrier_sim2);
         buttonResetSlotLock = findViewById(R.id.button_reset_slot_lock);
 
-        setupTabLayout();
+        setupBottomNav();
+        setupDashboardUi();
         setupSubscriptionUi();
         setupCfPoolUi();
         setupCfOptimizerUi();
@@ -325,29 +394,129 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void setupTabLayout() {
-        tabLayout.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
-            @Override
-            public void onTabSelected(TabLayout.Tab tab) {
-                int position = tab.getPosition();
-                if (position == 0) {
-                    layoutTabNodes.setVisibility(View.VISIBLE);
-                    layoutTabSubscription.setVisibility(View.GONE);
-                    layoutBottomBar.setVisibility(View.VISIBLE);
-                } else {
-                    layoutTabNodes.setVisibility(View.GONE);
-                    layoutTabSubscription.setVisibility(View.VISIBLE);
-                    layoutBottomBar.setVisibility(View.GONE);
-                    updateSubscriptionUi();
-                }
-            }
+    /* ==================== 底部四栏导航（v2.10.19） ==================== */
+    private void setupBottomNav() {
+        for (int i = 0; i < navItems.length; i++) {
+            final int idx = i;
+            navItems[i].setOnClickListener(v -> switchTab(idx));
+        }
+        switchTab(TAB_CONNECT);
+    }
 
-            @Override
-            public void onTabUnselected(TabLayout.Tab tab) {}
+    private void switchTab(int idx) {
+        currentTab = idx;
+        for (int i = 0; i < tabPages.length; i++) {
+            tabPages[i].setVisibility(i == idx ? View.VISIBLE : View.GONE);
+        }
+        int accent = ContextCompat.getColor(this, R.color.xt_accent);
+        int inactive = ContextCompat.getColor(this, R.color.xt_nav_inactive);
+        for (int i = 0; i < navItems.length; i++) {
+            boolean on = (i == idx);
+            navWraps[i].setBackgroundResource(on ? R.drawable.nav_selected_bg : 0);
+            navIcons[i].setColorFilter(on ? accent : inactive, PorterDuff.Mode.SRC_IN);
+            navLabels[i].setTextColor(on ? accent : inactive);
+        }
+        if (idx == TAB_CONFIG) updateProfileList();
+        if (idx == TAB_OPTIMIZE) updateCfPoolUi();
+        if (idx == TAB_SETTINGS) updateSubscriptionUi();
+        if (idx == TAB_CONNECT) refreshDashboard();
+    }
 
-            @Override
-            public void onTabReselected(TabLayout.Tab tab) {}
+    /* ==================== 连接页仪表盘 ====================
+       真实数据源：TProxyService.nativeStats() -> [tx包, tx字节, rx包, rx字节]、
+       Preferences 节点延迟/节点数、CfIpPool.poolSize、TunnelWatchdog.getTotalHeals。
+       原生层重启后计数会归零，所以累计值按「增量」持久化累加，不虚增也不漏太多。 */
+    private android.content.SharedPreferences dashSp() {
+        return getSharedPreferences(DASH_SP, MODE_PRIVATE);
+    }
+
+    private void setupDashboardUi() {
+        android.content.SharedPreferences sp = dashSp();
+        if (sp.getLong(K_SINCE, 0L) == 0L) {
+            sp.edit().putLong(K_SINCE, System.currentTimeMillis()).apply();
+        }
+        layoutTrafficCard.setOnLongClickListener(v -> {
+            android.content.SharedPreferences.Editor e = dashSp().edit();
+            e.putLong(K_TOTAL_TX, 0L).putLong(K_TOTAL_RX, 0L)
+                    .putLong(K_SINCE, System.currentTimeMillis()).apply();
+            Toast.makeText(this, R.string.dash_traffic_cleared, Toast.LENGTH_SHORT).show();
+            refreshDashboard();
+            return true;
         });
+        refreshDashboard();
+    }
+
+    private void accumulateTraffic(long tx, long rx) {
+        android.content.SharedPreferences sp = dashSp();
+        long lastTx = sp.getLong(K_LAST_TX, -1L);
+        long lastRx = sp.getLong(K_LAST_RX, -1L);
+        long totalTx = sp.getLong(K_TOTAL_TX, 0L);
+        long totalRx = sp.getLong(K_TOTAL_RX, 0L);
+        if (lastTx >= 0) {
+            /* tx 变小说明原生层重启过、计数从 0 重来，这一轮的 tx 本身就是增量 */
+            totalTx += (tx >= lastTx) ? (tx - lastTx) : tx;
+            totalRx += (rx >= lastRx) ? (rx - lastRx) : rx;
+        }
+        sp.edit().putLong(K_TOTAL_TX, totalTx).putLong(K_TOTAL_RX, totalRx)
+                .putLong(K_LAST_TX, tx).putLong(K_LAST_RX, rx).apply();
+    }
+
+    private void refreshDashboard() {
+        if (textDashUpload == null || prefs == null) return;
+        long tx = 0, rx = 0;
+        try {
+            long[] st = TProxyService.nativeStats();
+            if (st != null && st.length >= 4) {
+                tx = st[1];
+                rx = st[3];
+            }
+        } catch (Throwable ignored) {}
+        accumulateTraffic(tx, rx);
+
+        android.content.SharedPreferences sp = dashSp();
+        textDashUpload.setText(String.format(Locale.US, "%.1f", tx / 1048576.0));
+        textDashDownload.setText(String.format(Locale.US, "%.1f", rx / 1048576.0));
+        textTotalUpload.setText(formatBytes(sp.getLong(K_TOTAL_TX, 0L)));
+        textTotalDownload.setText(formatBytes(sp.getLong(K_TOTAL_RX, 0L)));
+
+        Set<String> ids = prefs.getProfileIds();
+        int nodeCount = (ids == null) ? 0 : ids.size();
+        textDashNodes.setText(String.valueOf(nodeCount));
+        textDashNodeCount.setText(getString(R.string.dash_node_count_fmt, nodeCount));
+
+        String curId = prefs.getCurrentProfileId();
+        int lat = (curId == null || curId.isEmpty()) ? -1 : prefs.getProfileLatency(curId);
+        textDashLatency.setText(lat > 0 ? String.valueOf(lat) : getString(R.string.dash_no_data));
+
+        int pool = 0;
+        try {
+            pool = CfIpPool.poolSize(prefs, CfIpPool.detectSlot(this));
+        } catch (Throwable ignored) {}
+        int heals = TunnelWatchdog.getTotalHeals();
+        textDashPoolInfo.setText(getString(R.string.dash_pool_info_fmt, pool, heals));
+
+        long since = sp.getLong(K_SINCE, System.currentTimeMillis());
+        String date = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date(since));
+        textDashFooter.setText(getString(R.string.dash_footer_fmt, date, heals));
+    }
+
+    private static String formatBytes(long b) {
+        if (b < 1024L) return b + " B";
+        if (b < 1048576L) return String.format(Locale.US, "%.1f KB", b / 1024.0);
+        if (b < 1073741824L) return String.format(Locale.US, "%.1f MB", b / 1048576.0);
+        return String.format(Locale.US, "%.2f GB", b / 1073741824.0);
+    }
+
+    private void startDashTicker() {
+        if (dashTicking) return;
+        dashTicking = true;
+        dashHandler.removeCallbacks(dashTick);
+        dashHandler.post(dashTick);
+    }
+
+    private void stopDashTicker() {
+        dashTicking = false;
+        dashHandler.removeCallbacks(dashTick);
     }
 
     private void setupSearchUi() {
@@ -370,17 +539,23 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         updateUi();
+        startDashTicker();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        stopDashTicker();
     }
 
     @Override
     public void onBackPressed() {
-        // 如果在订阅 Tab，先切换回节点 Tab
-        if (tabLayout != null && tabLayout.getSelectedTabPosition() != 0) {
-            TabLayout.Tab tab = tabLayout.getTabAt(0);
-            if (tab != null) tab.select();
+        // 不在连接页：先回到连接页，而不是直接退出（原来是两个 tab，现在是四栏）
+        if (currentTab != TAB_CONNECT) {
+            switchTab(TAB_CONNECT);
             return;
         }
-        // 在主节点页按返回键：退到后台保持常驻，防误杀 VPN 隧道
+        // 在连接页按返回键：退到后台保持常驻，防误杀 VPN 隧道
         moveTaskToBack(true);
     }
 
@@ -417,6 +592,7 @@ public class MainActivity extends AppCompatActivity {
         updateProfileList();
         updateSubscriptionUi();
         updateCfOptimizerUi();
+        refreshDashboard();
 
         boolean editable = !prefs.getEnable();
         buttonNewProfile.setEnabled(editable);
@@ -1002,8 +1178,13 @@ public class MainActivity extends AppCompatActivity {
         boolean enabled = prefs.getEnable();
         textStatusValue.setText(enabled ? R.string.status_connected : R.string.status_disconnected);
         textStatusValue.setTextColor(ContextCompat.getColor(this, enabled ? R.color.xt_success : R.color.xt_text_primary));
-        textActiveProfile.setText(getString(R.string.profile_label) + " " + prefs.getProfileName(prefs.getCurrentProfileId()));
+        /* 大标题只放节点名，别再拼「配置节点：」前缀，否则一行放不下 */
+        textActiveProfile.setText(prefs.getProfileName(prefs.getCurrentProfileId()));
         buttonControl.setText(enabled ? R.string.control_disable : R.string.control_enable);
+        if (statusDot != null && statusDot.getBackground() instanceof GradientDrawable) {
+            ((GradientDrawable) statusDot.getBackground()).setColor(ContextCompat.getColor(
+                    this, enabled ? R.color.xt_success : R.color.xt_status_stopped));
+        }
     }
 
     private void updateModeUi() {

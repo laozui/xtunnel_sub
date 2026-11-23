@@ -196,4 +196,30 @@
         <string name="conn_apply_btn">保存并应用</string>
         <string name="toast_conn_applied">已将全局并发连接数设置为 %1$d，全量节点已生效！</string>
         <string name="toast_conn_invalid">请输入 1 到 32 之间的有效连接数</string>
+
+        <!-- ★ v2.10.19：四栏导航 + 连接页仪表盘 -->
+        <string name="nav_connect">连接</string>
+        <string name="nav_config">配置</string>
+        <string name="nav_optimize">优选</string>
+        <string name="nav_settings">设置</string>
+        <string name="dash_version">v2.10.19</string>
+        <string name="dash_latency">延迟</string>
+        <string name="dash_nodes">节点数</string>
+        <string name="dash_upload">本次上传</string>
+        <string name="dash_download">本次下载</string>
+        <string name="dash_unit_ms">ms</string>
+        <string name="dash_unit_count">个</string>
+        <string name="dash_unit_mb">MB</string>
+        <string name="dash_total_traffic">累计流量</string>
+        <string name="dash_clear_hint">长按清空</string>
+        <string name="dash_up">上传</string>
+        <string name="dash_down">下载</string>
+        <string name="dash_proxy_mode">代理模式</string>
+        <string name="dash_proxy_hint">断开后切换</string>
+        <string name="dash_proxy_desc">勾选＝全局代理，不勾＝分应用代理</string>
+        <string name="dash_traffic_cleared">累计流量已清零</string>
+        <string name="dash_no_data">--</string>
+        <string name="dash_node_count_fmt">%1$d 个节点</string>
+        <string name="dash_pool_info_fmt">IP 池 %1$d · 自愈 %2$d 次</string>
+        <string name="dash_footer_fmt">统计自 %1$s · 自愈 %2$d 次</string>
 </resources>

@@ -773,6 +773,15 @@ public class CfOptimizer {
                         handleNetworkChange(context, caps);
                     }
                 }
+
+                @Override
+                public void onLost(Network network) {
+                    /* ★ v2.10.19：补上 onLost。
+                       以前只有 onAvailable / onCapabilitiesChanged，遇到「先断后连」
+                       的切网（飞行模式、电梯出信号、双卡重注册）时，VPN 在线会让
+                       onAvailable 不来或来得很晚，优选感知就整个漏掉。 */
+                    handleNetworkChange(context, null);
+                }
             };
 
             NetworkRequest request = new NetworkRequest.Builder()

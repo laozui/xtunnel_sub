@@ -70,6 +70,12 @@ public final class TunnelWatchdog {
        电梯里信号短暂消失这类正常抖动，又不会让用户卡太久。 */
     private static final int FAIL_THRESHOLD = 3;
 
+    /* ★ v2.10.19：「单站问题」豁免最多连续几轮。
+       切网后的半开长连接，Go 心跳照刷、原生字节照涨，会一直命中豁免而永远不重连
+       （朋友反馈「要开飞行模式再开网络才能上油管」的第二个帮凶）。
+       3 轮 = 90 秒后强制进入僵死判定，让深度重连有机会救回来。 */
+    private static final int EXEMPT_MAX_ROUNDS = 3;
+
     /* Go 侧心跳文件超过这么久没刷新，就认为 Go 协程已经死了。
        Go 是每 5 秒刷一次，90 秒 = 给了 18 次机会，绝不会误判。 */
     private static final long HEARTBEAT_STALE_MS = 90 * 1000;
@@ -89,6 +95,8 @@ public final class TunnelWatchdog {
 
     /* 连续僵死轮数 */
     private static int failStreak = 0;
+    /* 连续被判「单站问题」的轮数（v2.10.19，超过上限强制重连） */
+    private static int exemptStreak = 0;
     /* 连续重连失败次数（用于退避） */
     private static int healAttempts = 0;
     /* 上一次看到的原生层收发总字节（判断"还在不在转发"） */
@@ -115,6 +123,7 @@ public final class TunnelWatchdog {
     public static void endRebuild() {
         rebuilding = false;
         failStreak = 0;
+        exemptStreak = 0;
         lastBytes = -1;
         Log.i(TAG, "深度重连结束，看门狗恢复判定");
     }
@@ -238,6 +247,7 @@ public final class TunnelWatchdog {
                 Log.i(TAG, "隧道已恢复正常（延迟 " + latency + "ms），僵死计数清零");
             }
             failStreak = 0;
+            exemptStreak = 0;
             /* 真的通了才允许把退避窗口归零 —— 否则连续几次僵死会把退避推到
                10 分钟，之后即便网络早恢复，下次卡死也要干等 10 分钟。 */
             resetBackoff();
@@ -261,11 +271,21 @@ public final class TunnelWatchdog {
 
         if (bytesGrowing && !heartbeatDead) {
             /* 原生层还在干活、内核也活着，只是这个目标站不通
-               （被墙 / 该站慢 / DNS 抽风）。这不算隧道卡死，绝不重连 ——
-               否则每天要白折腾几十次。 */
-            Log.i(TAG, "连通性探测失败，但原生层仍在转发（bytes " + bytes
-                    + "），判定为单站问题，不重连");
-            return;
+               （被墙 / 该站慢 / DNS 抽风）。多数时候确实不该重连。
+               ★ 但「心跳活 + 字节涨」也可能是切网后的半开长连接：
+                 短连接探测一直失败、长视频流量早断了，字节只是残留包在涨。
+                 所以豁免不能无限期 —— 连续 3 轮（90 秒）就强制进入僵死判定。 */
+            exemptStreak++;
+            if (exemptStreak < EXEMPT_MAX_ROUNDS) {
+                Log.i(TAG, "连通性探测失败，但原生层仍在转发（bytes " + bytes
+                        + "），暂判单站问题，不重连（" + exemptStreak + "/"
+                        + EXEMPT_MAX_ROUNDS + "）");
+                return;
+            }
+            Log.w(TAG, "连续 " + exemptStreak + " 轮被判单站问题但连通性始终未恢复"
+                    + " —— 疑似切网后半开长连接，强制进入僵死判定");
+        } else {
+            exemptStreak = 0;
         }
 
         failStreak++;
@@ -287,6 +307,7 @@ public final class TunnelWatchdog {
         }
 
         failStreak = 0;
+        exemptStreak = 0;
         doDeepHeal(hbAge, bytes);
     }
 

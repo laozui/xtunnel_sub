@@ -73,6 +73,10 @@ public class MainActivity extends AppCompatActivity {
     private static final String K_LAST_TX = "last_tx";
     private static final String K_LAST_RX = "last_rx";
     private static final String K_SINCE = "since";
+    private static final String K_SESSION_TX = "session_tx";
+    private static final String K_SESSION_RX = "session_rx";
+    private static final String K_SOURCE_VER = "source_ver";
+    private static final int SOURCE_VER = 2;   /* 2 = Android TrafficStats 系统计数 */
     private View statusDot;
     private TextView textDashNodeCount;
     private TextView textDashPoolInfo;
@@ -87,6 +91,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView textDashUploadUnit;
     private TextView textDashDownloadUnit;
     private TextView textDashLive;
+    private TextView textDashDiag;
     private boolean statsAvailable = true;
     private long lastSampleMs = 0L;
     private long prevTx = 0L;
@@ -217,6 +222,7 @@ public class MainActivity extends AppCompatActivity {
         textDashUploadUnit = findViewById(R.id.text_dash_upload_unit);
         textDashDownloadUnit = findViewById(R.id.text_dash_download_unit);
         textDashLive = findViewById(R.id.text_dash_live);
+        textDashDiag = findViewById(R.id.text_dash_diag);
         layoutTrafficCard = findViewById(R.id.layout_traffic_card);
 
         // 绑定节点页控件
@@ -443,18 +449,56 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupDashboardUi() {
         android.content.SharedPreferences sp = dashSp();
-        if (sp.getLong(K_SINCE, 0L) == 0L) {
-            sp.edit().putLong(K_SINCE, System.currentTimeMillis()).apply();
+        /* 数据源从「原生 TUN 统计」换成「Android 系统计数」时，必须把旧的
+           last/total 清零，否则第一次采样会把系统计数自开机以来的总量
+           当成新增流量，累计卡片瞬间虚增几百 MB。设备重启后计数变小也
+           走同一套逻辑自动重建基线。 */
+        long[] s0 = readSystemTraffic();
+        long bTx = s0[0] >= 0 ? s0[0] : (s0[2] >= 0 ? s0[2] : 0L);
+        long bRx = s0[1] >= 0 ? s0[1] : (s0[3] >= 0 ? s0[3] : 0L);
+        if (sp.getInt(K_SOURCE_VER, 0) != SOURCE_VER || sp.getLong(K_SINCE, 0L) == 0L) {
+            sp.edit().putInt(K_SOURCE_VER, SOURCE_VER)
+                    .putLong(K_TOTAL_TX, 0L).putLong(K_TOTAL_RX, 0L)
+                    .putLong(K_LAST_TX, -1L).putLong(K_LAST_RX, -1L)
+                    .putLong(K_SESSION_TX, bTx).putLong(K_SESSION_RX, bRx)
+                    .putLong(K_SINCE, System.currentTimeMillis()).apply();
         }
         layoutTrafficCard.setOnLongClickListener(v -> {
-            android.content.SharedPreferences.Editor e = dashSp().edit();
-            e.putLong(K_TOTAL_TX, 0L).putLong(K_TOTAL_RX, 0L)
+            long[] cur = readSystemTraffic();
+            long cTx = cur[0] >= 0 ? cur[0] : (cur[2] >= 0 ? cur[2] : 0L);
+            long cRx = cur[1] >= 0 ? cur[1] : (cur[3] >= 0 ? cur[3] : 0L);
+            /* 清零必须同步重置 last 与会话基线，否则下一秒会把清零前的增量又加回来 */
+            dashSp().edit()
+                    .putLong(K_TOTAL_TX, 0L).putLong(K_TOTAL_RX, 0L)
+                    .putLong(K_LAST_TX, cTx).putLong(K_LAST_RX, cRx)
+                    .putLong(K_SESSION_TX, cTx).putLong(K_SESSION_RX, cRx)
                     .putLong(K_SINCE, System.currentTimeMillis()).apply();
             Toast.makeText(this, R.string.dash_traffic_cleared, Toast.LENGTH_SHORT).show();
             refreshDashboard();
             return true;
         });
         refreshDashboard();
+    }
+
+    /* Android 内核维护的字节计数：不依赖 JNI、不依赖 App 是否在前台。
+       返回 [本进程UID_tx, 本进程UID_rx, 设备总量_tx, 设备总量_rx]，不支持时为 -1。
+       PAT 的隧道出口（Go 内核 / hev）都是本进程 socket，UID 计数最贴近真实代理流量。 */
+    private long[] readSystemTraffic() {
+        long uidTx = -1L, uidRx = -1L, allTx = -1L, allRx = -1L;
+        try {
+            int uid = android.os.Process.myUid();
+            uidTx = android.net.TrafficStats.getUidTxBytes(uid);
+            uidRx = android.net.TrafficStats.getUidRxBytes(uid);
+        } catch (Throwable ignored) {}
+        try {
+            allTx = android.net.TrafficStats.getTotalTxBytes();
+            allRx = android.net.TrafficStats.getTotalRxBytes();
+        } catch (Throwable ignored) {}
+        return new long[]{uidTx, uidRx, allTx, allRx};
+    }
+
+    private static String fmtShort(long b) {
+        return b < 0 ? "-" : formatBytes(b).replace(" ", "");
     }
 
     private void accumulateTraffic(long tx, long rx) {
@@ -475,20 +519,27 @@ public class MainActivity extends AppCompatActivity {
 
     private void refreshDashboard() {
         if (textDashUpload == null || prefs == null) return;
-        long tx = 0, rx = 0;
-        statsAvailable = true;
+
+        /* 原生 TUN 统计只作诊断对照 —— 有用户的链路上它始终返回 0，
+           之前把它当唯一数据源，导致界面永远是 0。 */
+        long[] jni = null;
+        String jniErr = null;
         try {
-            long[] st = TProxyService.nativeStats();
-            if (st != null && st.length >= 4) {
-                tx = st[1];
-                rx = st[3];
-            } else {
-                statsAvailable = false;
-            }
+            jni = TProxyService.nativeStats();
         } catch (Throwable t) {
-            statsAvailable = false;
-            android.util.Log.w("pat-dash", "nativeStats unavailable: " + t);
+            jniErr = t.getClass().getSimpleName();
         }
+
+        long[] sys = readSystemTraffic();
+        boolean useUid = sys[0] >= 0 && sys[1] >= 0;
+        long tx = useUid ? sys[0] : (sys[2] >= 0 ? sys[2] : 0L);
+        long rx = useUid ? sys[1] : (sys[3] >= 0 ? sys[3] : 0L);
+        String src = useUid ? getString(R.string.dash_src_uid)
+                : (sys[2] >= 0 ? getString(R.string.dash_src_all)
+                               : getString(R.string.dash_src_none));
+
+        /* 系统计数是自开机累计值：哪怕 App 在后台一小时完全没采样，
+           切回来的这一轮 (tx - lastTx) 也会把整段增量一次性补回来。 */
         accumulateTraffic(tx, rx);
 
         long now = System.currentTimeMillis();
@@ -505,14 +556,22 @@ public class MainActivity extends AppCompatActivity {
         /* 不在连接页时只采样、不刷 UI，省电 */
         if (currentTab != TAB_CONNECT) return;
 
-        String[] up = splitBytes(tx);
-        String[] down = splitBytes(rx);
+        android.content.SharedPreferences sp = dashSp();
+        /* 设备重启后系统计数会归零，此时重建会话基线，避免大卡片永远显示 0 */
+        long bTx = sp.getLong(K_SESSION_TX, tx);
+        long bRx = sp.getLong(K_SESSION_RX, rx);
+        if (tx < bTx || rx < bRx) {
+            bTx = Math.min(bTx, tx);
+            bRx = Math.min(bRx, rx);
+            sp.edit().putLong(K_SESSION_TX, bTx).putLong(K_SESSION_RX, bRx).apply();
+        }
+        String[] up = splitBytes(Math.max(0L, tx - bTx));
+        String[] down = splitBytes(Math.max(0L, rx - bRx));
         textDashUpload.setText(up[0]);
         textDashUploadUnit.setText(up[1]);
         textDashDownload.setText(down[0]);
         textDashDownloadUnit.setText(down[1]);
 
-        android.content.SharedPreferences sp = dashSp();
         textTotalUpload.setText(formatBytes(sp.getLong(K_TOTAL_TX, 0L)));
         textTotalDownload.setText(formatBytes(sp.getLong(K_TOTAL_RX, 0L)));
 
@@ -537,13 +596,17 @@ public class MainActivity extends AppCompatActivity {
         textDashFooter.setText(getString(R.string.dash_footer_fmt, date, heals));
 
         if (textDashLive != null) {
-            if (!statsAvailable) {
-                textDashLive.setText(R.string.dash_stats_unavailable);
-            } else {
-                String clock = new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date(now));
-                textDashLive.setText(getString(R.string.dash_live_fmt,
-                        formatRate(upRate), formatRate(downRate), clock));
-            }
+            String clock = new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date(now));
+            textDashLive.setText(getString(R.string.dash_live_fmt,
+                    formatRate(upRate), formatRate(downRate), src, clock));
+        }
+        if (textDashDiag != null) {
+            String j = jniErr != null ? ("JNI 异常 " + jniErr)
+                    : (jni == null ? "JNI null" : "JNI "
+                        + jni[0] + "/" + jni[1] + "/" + jni[2] + "/" + jni[3]);
+            textDashDiag.setText(j + " · UID " + fmtShort(sys[0]) + "/" + fmtShort(sys[1])
+                    + " · 设备 " + fmtShort(sys[2]) + "/" + fmtShort(sys[3])
+                    + " · 连接 " + (prefs.getEnable() ? "开" : "关"));
         }
     }
 

@@ -422,6 +422,15 @@
                             android:textSize="11sp" />
 
                         <TextView
+                            android:id="@+id/text_dash_diag"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:lineSpacingExtra="2dp"
+                            android:textColor="@color/xt_text_secondary"
+                            android:textSize="10sp" />
+
+                        <TextView
                             android:id="@+id/text_dash_footer"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"

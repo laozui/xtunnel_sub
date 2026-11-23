@@ -104,10 +104,12 @@ public class TProxyService extends VpnService {
                 }
             };
             /* ★ 关键：排除 VPN 网络本身。否则我们自己 establish() 出新 TUN 时
-               又会收到一次 onAvailable，形成「重建 -> 又重建」的无限循环。 */
+               又会收到一次 onAvailable，形成「重建 -> 又重建」的无限循环。
+               Android 里 VPN 是用 TRANSPORT_VPN 标识的（没有 NET_CAPABILITY_VPN 这个常量），
+               所以用 removeTransport，不是 removeCapability。 */
             android.net.NetworkRequest req = new android.net.NetworkRequest.Builder()
                     .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .removeCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VPN)
+                    .removeTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)
                     .build();
             cm.registerNetworkCallback(req, networkHealCallback);
             networkWatcherSince = System.currentTimeMillis();

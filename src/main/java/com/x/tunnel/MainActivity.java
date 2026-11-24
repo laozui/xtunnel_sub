@@ -92,7 +92,6 @@ public class MainActivity extends AppCompatActivity {
     private TextView textDashDownloadUnit;
     private TextView textDashLive;
     private TextView textDashDiag;
-    private boolean statsAvailable = true;
     private long lastSampleMs = 0L;
     private long prevTx = 0L;
     private long prevRx = 0L;
@@ -601,12 +600,17 @@ public class MainActivity extends AppCompatActivity {
                     formatRate(upRate), formatRate(downRate), src, clock));
         }
         if (textDashDiag != null) {
-            String j = jniErr != null ? ("JNI 异常 " + jniErr)
-                    : (jni == null ? "JNI null" : "JNI "
-                        + jni[0] + "/" + jni[1] + "/" + jni[2] + "/" + jni[3]);
-            textDashDiag.setText(j + " · UID " + fmtShort(sys[0]) + "/" + fmtShort(sys[1])
-                    + " · 设备 " + fmtShort(sys[2]) + "/" + fmtShort(sys[3])
-                    + " · 连接 " + (prefs.getEnable() ? "开" : "关"));
+            /* v2.10.21 已定性：原生统计正常返回但恒为 0（非异常），
+               系统计数工作正常。诊断行默认隐藏，只有 JNI 真出异常才亮出来。 */
+            if (jniErr != null || jni == null) {
+                String j = jniErr != null ? ("JNI 异常 " + jniErr) : "JNI null";
+                textDashDiag.setText(j + " · UID " + fmtShort(sys[0]) + "/" + fmtShort(sys[1])
+                        + " · 设备 " + fmtShort(sys[2]) + "/" + fmtShort(sys[3])
+                        + " · 连接 " + (prefs.getEnable() ? "开" : "关"));
+                textDashDiag.setVisibility(View.VISIBLE);
+            } else {
+                textDashDiag.setVisibility(View.GONE);
+            }
         }
     }
 

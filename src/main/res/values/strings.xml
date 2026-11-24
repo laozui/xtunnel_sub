@@ -202,7 +202,7 @@
         <string name="nav_config">节点</string>
         <string name="nav_optimize">优选</string>
         <string name="nav_settings">设置</string>
-        <string name="dash_version">v2.10.20</string>
+        <string name="dash_version">v2.10.22</string>
         <string name="dash_latency">延迟</string>
         <string name="dash_nodes">节点数</string>
         <string name="dash_upload">本次上传</string>

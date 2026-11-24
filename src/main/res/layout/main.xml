@@ -428,7 +428,8 @@
                             android:layout_marginTop="4dp"
                             android:lineSpacingExtra="2dp"
                             android:textColor="@color/xt_text_secondary"
-                            android:textSize="10sp" />
+                            android:textSize="10sp"
+                            android:visibility="gone" />
 
                         <TextView
                             android:id="@+id/text_dash_footer"

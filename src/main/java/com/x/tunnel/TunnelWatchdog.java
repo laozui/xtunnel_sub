@@ -144,7 +144,7 @@ public final class TunnelWatchdog {
             return;
         }
         appContext = context.getApplicationContext();
-        thread = new HandlerThread("xtunnel-watchdog");
+        thread = new HandlerThread("pat-watchdog");
         thread.start();
         handler = new Handler(thread.getLooper());
 

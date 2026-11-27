@@ -116,9 +116,9 @@ public class TProxyService extends VpnService {
                     .build();
             cm.registerNetworkCallback(req, networkHealCallback);
             networkWatcherSince = System.currentTimeMillis();
-            Log.i("xtunnel", "底层网络切换监听已注册（切网将自动重建隧道）");
+            Log.i("pat", "底层网络切换监听已注册（切网将自动重建隧道）");
         } catch (Throwable t) {
-            Log.w("xtunnel", "注册底层网络监听失败: " + t.getMessage());
+            Log.w("pat", "注册底层网络监听失败: " + t.getMessage());
             networkHealCallback = null;
         }
     }
@@ -156,20 +156,20 @@ public class TProxyService extends VpnService {
                     return;
                 }
                 if (now - lastNetworkHealAt < 10000) {
-                    Log.i("xtunnel", "切网重建冷却中，跳过（" + reason + "）");
+                    Log.i("pat", "切网重建冷却中，跳过（" + reason + "）");
                     return;
                 }
                 if (healInProgress.get()) {
-                    Log.i("xtunnel", "已有深度重连在跑，跳过切网重建");
+                    Log.i("pat", "已有深度重连在跑，跳过切网重建");
                     return;
                 }
                 lastNetworkHealAt = now;
-                Log.w("xtunnel", "检测到" + reason + "，主动重建隧道（修复半开长连接）");
+                Log.w("pat", "检测到" + reason + "，主动重建隧道（修复半开长连接）");
                 try {
                     startService(new Intent(TProxyService.this, TProxyService.class)
                             .setAction(ACTION_HEAL));
                 } catch (Throwable t) {
-                    Log.w("xtunnel", "切网重建发起失败: " + t.getMessage());
+                    Log.w("pat", "切网重建发起失败: " + t.getMessage());
                 }
             }
         };
@@ -196,7 +196,7 @@ public class TProxyService extends VpnService {
                结果是一个刚 establish 就被另一个 close 掉。
                重建本来就会从 prefs 读最新节点，所以这里直接忽略即可。 */
             if (healInProgress.get()) {
-                Log.i("xtunnel", "深度重连进行中，忽略切换请求（重建会自动用最新节点）");
+                Log.i("pat", "深度重连进行中，忽略切换请求（重建会自动用最新节点）");
                 return START_STICKY;
             }
             startService();
@@ -367,7 +367,7 @@ public class TProxyService extends VpnService {
                                             Toast.makeText(appContext, "启动成功", Toast.LENGTH_SHORT).show();
                                         }
                                     });
-                                    Log.i("xtunnel", "===== 启动成功 =====");
+                                    Log.i("pat", "===== 启动成功 =====");
                                 } else {
                                     new Handler(Looper.getMainLooper()).post(new Runnable() {
                                         @Override
@@ -375,10 +375,10 @@ public class TProxyService extends VpnService {
                                             Toast.makeText(appContext, "服务器连接失败", Toast.LENGTH_SHORT).show();
                                         }
                                     });
-                                    Log.e("xtunnel", "===== 服务器连接失败 =====");
+                                    Log.e("pat", "===== 服务器连接失败 =====");
                                 }
                             }
-                        }, "xtunnel-ws-wait").start();
+                        }, "pat-ws-wait").start();
                 } catch (Exception e) {
                         try { TProxyStopService(); } catch (Throwable t) {}
                         try { if (tunFd != null) { tunFd.close(); tunFd = null; } } catch (IOException ioe) {}
@@ -387,7 +387,7 @@ public class TProxyService extends VpnService {
                 }
                 prefs.setEnable(true);
 
-		String channelName = "socks5";
+		String channelName = "pat";
 		initNotificationChannel(channelName);
 		createNotification(channelName);
 
@@ -408,7 +408,7 @@ public class TProxyService extends VpnService {
 		try {
 			CfOptimizer.startScheduler(this);
 		} catch (Throwable t) {
-			Log.w("xtunnel", "启动优选调度器失败: " + t.getMessage());
+			Log.w("pat", "启动优选调度器失败: " + t.getMessage());
 		}
 
 		/* ★ 挂上切网监听（幂等）。VPN 服务长期存活，挂这里才不会随界面回收而断链。 */
@@ -469,13 +469,13 @@ public class TProxyService extends VpnService {
                         return;
                     }
                     String displayName = (profileName != null && !profileName.isEmpty()) ? profileName : profileId;
-                    Log.i("xtunnel", "===== 开始热切换节点: " + displayName + " =====");
+                    Log.i("pat", "===== 开始热切换节点: " + displayName + " =====");
 
                     // 1. 优雅停止旧代理内核（释放原有 websocket 连接池）
                     try {
                         Tunnel.stopSocksProxy();
                     } catch (Throwable t) {
-                        Log.w("xtunnel", "停止旧代理内核提示: " + t.getMessage());
+                        Log.w("pat", "停止旧代理内核提示: " + t.getMessage());
                     }
 
                     // 2. 缓冲 100ms 确保端口与连接释放完全
@@ -517,7 +517,7 @@ public class TProxyService extends VpnService {
                                 insecure
                         );
                     } catch (Throwable e) {
-                        Log.e("xtunnel", "热切换启动新内核失败: " + e.getMessage(), e);
+                        Log.e("pat", "热切换启动新内核失败: " + e.getMessage(), e);
                         new Handler(Looper.getMainLooper()).post(new Runnable() {
                             @Override
                             public void run() {
@@ -539,10 +539,10 @@ public class TProxyService extends VpnService {
                         public void run() {
                             if (success) {
                                 Toast.makeText(appContext, "已无缝切换至: " + displayName, Toast.LENGTH_SHORT).show();
-                                Log.i("xtunnel", "===== 热切换节点成功: " + displayName + " =====");
+                                Log.i("pat", "===== 热切换节点成功: " + displayName + " =====");
                             } else {
                                 Toast.makeText(appContext, "节点已切换，正在连接中…", Toast.LENGTH_SHORT).show();
-                                Log.w("xtunnel", "===== 节点握手未在3s内完成，后台继续连接 =====");
+                                Log.w("pat", "===== 节点握手未在3s内完成，后台继续连接 =====");
                             }
                         }
                     });
@@ -555,7 +555,7 @@ public class TProxyService extends VpnService {
                     TunnelWatchdog.notifySwitched();
                 }
             }
-        }, "xtunnel-switch-" + seq).start();
+        }, "pat-switch-" + seq).start();
     }
 
     /**
@@ -579,7 +579,7 @@ public class TProxyService extends VpnService {
            绝不能让两个线程同时拆建 —— 那会把刚建好的 TUN 又拆掉。
            已经在重连就直接忽略，反正目标状态一样。 */
         if (!healInProgress.compareAndSet(false, true)) {
-            Log.i("xtunnel", "已有一次深度重连在进行中，忽略本次请求");
+            Log.i("pat", "已有一次深度重连在进行中，忽略本次请求");
             return;
         }
         new Thread(new Runnable() {
@@ -591,15 +591,15 @@ public class TProxyService extends VpnService {
                     healInProgress.set(false);
                 }
             }
-        }, "xtunnel-heal").start();
+        }, "pat-heal").start();
     }
 
     private void doHealInBackground() {
-        Log.w("xtunnel", "===== 开始深度重连（自愈） =====");
+        Log.w("pat", "===== 开始深度重连（自愈） =====");
 
         Preferences prefs = new Preferences(this);
         if (!prefs.getEnable()) {
-            Log.i("xtunnel", "深度重连取消：用户已关闭 VPN");
+            Log.i("pat", "深度重连取消：用户已关闭 VPN");
             return;
         }
 
@@ -616,24 +616,24 @@ public class TProxyService extends VpnService {
                 if (tunFd != null) {
                     try { tunFd.close(); } catch (Throwable ignored) { }
                     tunFd = null;
-                    Log.i("xtunnel", "深度重连[1/5] 已关闭 TUN 网卡");
+                    Log.i("pat", "深度重连[1/5] 已关闭 TUN 网卡");
                 }
             } catch (Throwable t) {
-                Log.w("xtunnel", "关闭 TUN 异常: " + t.getMessage());
+                Log.w("pat", "关闭 TUN 异常: " + t.getMessage());
             }
 
             try {
                 TProxyStopService();
-                Log.i("xtunnel", "深度重连[2/5] 已停止原生转发层");
+                Log.i("pat", "深度重连[2/5] 已停止原生转发层");
             } catch (Throwable t) {
-                Log.w("xtunnel", "停止原生转发层异常: " + t.getMessage());
+                Log.w("pat", "停止原生转发层异常: " + t.getMessage());
             }
 
             try {
                 Tunnel.stopSocksProxy();
-                Log.i("xtunnel", "深度重连[3/5] 已停止 Go 内核");
+                Log.i("pat", "深度重连[3/5] 已停止 Go 内核");
             } catch (Throwable t) {
-                Log.w("xtunnel", "停止 Go 内核异常: " + t.getMessage());
+                Log.w("pat", "停止 Go 内核异常: " + t.getMessage());
             }
 
             /* 2. 给系统一点时间真正回收 fd / 端口 / 原生线程。
@@ -667,23 +667,23 @@ public class TProxyService extends VpnService {
             });
             try {
                 if (!done.await(20, java.util.concurrent.TimeUnit.SECONDS)) {
-                    Log.w("xtunnel", "深度重连：重建步骤等待超时（主线程繁忙），仍继续");
+                    Log.w("pat", "深度重连：重建步骤等待超时（主线程繁忙），仍继续");
                 }
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
             }
             if (err[0] != null) {
-                Log.e("xtunnel", "深度重连失败: " + err[0].getMessage(), err[0]);
+                Log.e("pat", "深度重连失败: " + err[0].getMessage(), err[0]);
                 return;
             }
-            Log.i("xtunnel", "深度重连[4/5] 已在主线程完成重建");
+            Log.i("pat", "深度重连[4/5] 已在主线程完成重建");
         } finally {
             /* 4. 无论成败都要给看门狗解开闸门并复位基线（endRebuild 内部会清
                   failStreak / lastBytes，效果覆盖原来的 notifySwitched）。
                   注意这里**不清退避窗口** —— 退避只由"探测真的通了"来清，
                   否则连续几次僵死会把间隔推到 10 分钟，网络早好了也得干等。 */
             TunnelWatchdog.endRebuild();
-            Log.i("xtunnel", "深度重连[5/5] 结束，看门狗已恢复判定");
+            Log.i("pat", "深度重连[5/5] 结束，看门狗已恢复判定");
         }
     }
 
@@ -740,14 +740,14 @@ public class TProxyService extends VpnService {
                         /* 状态没变就不打 —— 否则每 5 秒刷一遍同样的内容毫无意义。 */
                         if (!cur.equals(last)) {
                             last = cur;
-                            Log.i("xtunnel", "===== TUNNEL STATUS =====\n" + cur);
+                            Log.i("pat", "===== TUNNEL STATUS =====\n" + cur);
                         }
                     } catch (Throwable t) {
-                        Log.e("xtunnel", "diag error", t);
+                        Log.e("pat", "diag error", t);
                     }
                 }
             }
-        }, "xtunnel-diag");
+        }, "pat-diag");
         diagThread = t;
         t.start();
     }
@@ -803,7 +803,7 @@ public class TProxyService extends VpnService {
 	}
 
     private void updateNotification(String profileName) {
-        String channelName = "socks5";
+        String channelName = "pat";
         initNotificationChannel(channelName);
         Intent i = new Intent(this, MainActivity.class);
         i.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);

@@ -9,7 +9,7 @@
                                 android:permission="android.permission.BIND_VPN_SERVICE"
                                 android:exported="true"
                                 android:foregroundServiceType="specialUse"
-                                android:process=":vpn">
+                                android:process=":pat">
 			<intent-filter>
 				<action android:name="android.net.VpnService"/>
 			</intent-filter>

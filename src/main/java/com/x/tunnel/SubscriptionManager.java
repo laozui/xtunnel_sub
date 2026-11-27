@@ -103,7 +103,7 @@ public class SubscriptionManager {
         conn.setRequestMethod("GET");
         conn.setConnectTimeout(10000);
         conn.setReadTimeout(15000);
-        conn.setRequestProperty("User-Agent", "X-Tunnel-Sub/1.0");
+        conn.setRequestProperty("User-Agent", "PAT-Sub/1.0");
 
         int respCode = conn.getResponseCode();
         if (respCode >= 300 && respCode < 400) {

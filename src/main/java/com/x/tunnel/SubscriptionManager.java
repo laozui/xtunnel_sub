@@ -5,6 +5,7 @@ import java.io.InputStreamReader;
 import java.io.StringReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -67,10 +68,15 @@ public class SubscriptionManager {
                     return;
                 }
 
-                // 尝试检测是否为纯 Base64 编码，是则先解码
-                content = tryBase64Decode(content.trim());
+                // 新格式：html 落地页里抠 <!--PATSUB:...--> 的 base64；或纯 base64；或纯 pat://
+                content = preprocessContent(content.trim());
 
-                List<SubNode> nodes = parseIniNodes(content);
+                List<SubNode> nodes;
+                if (content.contains("pat://")) {
+                    nodes = parsePatUriNodes(content);
+                } else {
+                    nodes = parseIniNodes(content);
+                }
                 if (nodes.isEmpty()) {
                     if (callback != null) callback.onError("未解析到有效节点配置");
                     return;
@@ -123,18 +129,89 @@ public class SubscriptionManager {
         }
     }
 
-    private static String tryBase64Decode(String text) {
-        if (text.startsWith("[") || text.contains("[Server") || text.contains("server=")) {
+    /**
+     * 统一预处理：支持 4 种订阅载体
+     *  1) html 落地页：抠 <!--PATSUB:...--> 之间的 base64 再解码
+     *  2) 纯 base64：解码
+     *  3) 纯 pat:// 多行：原样返回
+     *  4) 老 INI：原样返回
+     */
+    private static String preprocessContent(String text) {
+        if (text == null) return "";
+        // 已是明文，直接返回
+        if (text.contains("[Server") || text.contains("server=") || text.contains("pat://")) {
             return text;
         }
-        try {
-            byte[] decoded = Base64.decode(text, Base64.DEFAULT);
-            String str = new String(decoded, StandardCharsets.UTF_8);
-            if (str.contains("[") || str.contains("server=")) {
-                return str;
+        // html 落地页：抠 PATSUB 标记
+        int s = text.indexOf("PATSUB:");
+        if (s >= 0) {
+            String tail = text.substring(s + 7);
+            int e = tail.indexOf("-");
+            if (e > 0) tail = tail.substring(0, e);
+            tail = tail.replaceAll("\\s", "");
+            String decoded = decodeB64(tail);
+            if (decoded != null && (decoded.contains("pat://") || decoded.contains("server="))) {
+                return decoded;
             }
-        } catch (Throwable ignored) {}
+        }
+        // 纯 base64（去掉空白后解）
+        String decoded = decodeB64(text.replaceAll("\\s", ""));
+        if (decoded != null && (decoded.contains("pat://") || decoded.contains("["))) {
+            return decoded;
+        }
         return text;
+    }
+
+    private static String decodeB64(String s) {
+        if (s == null || s.isEmpty()) return null;
+        try {
+            byte[] d = Base64.decode(s, Base64.DEFAULT);
+            String str = new String(d, StandardCharsets.UTF_8);
+            return str.trim().isEmpty() ? null : str;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 解析 pat://<name>@<host:port>?token=<uuid>[&c=<conn>] 多行订阅 */
+    public static List<SubNode> parsePatUriNodes(String content) {
+        List<SubNode> list = new ArrayList<>();
+        for (String raw : content.split("\\r?\\n")) {
+            String line = raw.trim();
+            if (!line.startsWith("pat://")) continue;
+            try {
+                String body = line.substring(6);
+                int at = body.indexOf('@');
+                int q = body.indexOf('?', at + 1);
+                if (at <= 0 || q <= at) continue;
+                String nameEnc = body.substring(0, at);
+                String hostPort = body.substring(at + 1, q);
+                String name = URLDecoder.decode(nameEnc, "UTF-8");
+
+                SubNode node = new SubNode();
+                node.name = name;
+                // 还原为内核需要的 wss:// 地址
+                node.server = hostPort.contains("://") ? hostPort : ("wss://" + hostPort);
+                String query = body.substring(q + 1);
+                for (String pair : query.split("&")) {
+                    int eq = pair.indexOf('=');
+                    if (eq <= 0) continue;
+                    String k = pair.substring(0, eq).toLowerCase();
+                    String v = URLDecoder.decode(pair.substring(eq + 1), "UTF-8");
+                    if ("token".equals(k)) node.token = v;
+                    else if ("c".equals(k) || "conn".equals(k) || "connections".equals(k)) {
+                        try { node.connections = Integer.parseInt(v.trim()); } catch (Exception ignored) {}
+                    } else if ("name".equals(k) && (name == null || name.isEmpty())) {
+                        node.name = v;
+                    }
+                }
+                if (node.token == null || node.token.isEmpty()) continue;
+                list.add(node);
+            } catch (Exception e) {
+                Log.w(TAG, "skip bad pat uri: " + line, e);
+            }
+        }
+        return list;
     }
 
     public static List<SubNode> parseIniNodes(String content) {

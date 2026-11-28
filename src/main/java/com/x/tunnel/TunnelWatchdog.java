@@ -80,6 +80,19 @@ public final class TunnelWatchdog {
        Go 是每 5 秒刷一次，90 秒 = 给了 18 次机会，绝不会误判。 */
     private static final long HEARTBEAT_STALE_MS = 90 * 1000;
 
+    /* ★ v2.10.25：长睡唤醒检测（老豆实测「睡一晚起来假活，切线路/停止启动都没用，
+       只有完全杀进程重开才行」）。
+       Doze / 厂商深度睡眠会把整个进程冻结 —— 连看门狗自己的 Handler 定时都停摆，
+       所以不能用定时器计时。唯一可靠的信号是「墙钟差」：冻结期间
+       System.currentTimeMillis() 照走，而 postDelayed 不走。正常巡检每 30 秒一跳，
+       墙钟差 > 1 小时必然是睡过。 */
+    private static final long SLEEP_WAKE_THRESHOLD_MS = 60 * 60 * 1000;
+    /* 上次巡检的墙钟时间。用 static 内存即可：进程冻结时值保留、唤醒后可比对；
+       进程被真杀掉重启后自动归零，不会把「刚启动」误判成长睡。 */
+    private static long lastWallTickMs = 0;
+    /* 长睡唤醒首轮探测不通 → 挂起等下一轮二次确认，避免刚唤醒网络还没就绪时误杀。 */
+    private static boolean wakeConfirmPending = false;
+
     /* 重连退避：第 1 次立即，之后 1 分钟、2 分钟、4 分钟…最多 10 分钟。
        网络真的没了的时候，疯狂重连只会把电耗光。 */
     private static final long BACKOFF_BASE_MS = 60 * 1000;
@@ -153,6 +166,9 @@ public final class TunnelWatchdog {
         healAttempts = 0;
         lastBytes = -1;
         nextHealAt = 0;
+        /* v2.10.25：启动即锚定墙钟。冷重启后新进程第一次巡检差值是几秒，不会误判长睡。 */
+        lastWallTickMs = System.currentTimeMillis();
+        wakeConfirmPending = false;
 
         handler.postDelayed(tick, CHECK_INTERVAL_MS);
         Log.i(TAG, "自愈看门狗已启动（每 " + (CHECK_INTERVAL_MS / 1000) + " 秒巡检一次，连续 "
@@ -173,6 +189,8 @@ public final class TunnelWatchdog {
         failStreak = 0;
         healAttempts = 0;
         lastBytes = -1;
+        wakeConfirmPending = false;
+        lastWallTickMs = 0;
         Log.i(TAG, "自愈看门狗已停止");
     }
 
@@ -215,7 +233,7 @@ public final class TunnelWatchdog {
                 return;
             }
             try {
-                checkOnce();
+                checkOnce(detectSleepWake());
             } catch (Throwable t) {
                 /* 看门狗自己绝不能崩 —— 崩了就再没人自愈了。 */
                 Log.e(TAG, "巡检异常（已忽略，继续下一轮）", t);
@@ -226,7 +244,25 @@ public final class TunnelWatchdog {
         }
     };
 
-    private static void checkOnce() {
+    /**
+     * 每轮巡检先算墙钟差。返回 true 表示距上次巡检超过 1 小时（进程被冻结过）。
+     * 无论是否判为长睡，都刷新锚点 —— 这样只有"刚解冻的第一轮"会返回 true。
+     */
+    private static boolean detectSleepWake() {
+        long now = System.currentTimeMillis();
+        boolean woke = false;
+        if (lastWallTickMs > 0) {
+            long gap = now - lastWallTickMs;
+            if (gap >= SLEEP_WAKE_THRESHOLD_MS) {
+                woke = true;
+                Log.w(TAG, "检测到长睡唤醒，墙钟间隔 " + (gap / 60000) + " 分钟");
+            }
+        }
+        lastWallTickMs = now;
+        return woke;
+    }
+
+    private static void checkOnce(boolean wokeFromSleep) {
         /* 深度重连进行中：这时候 TUN 刚被拆掉/正在重建，探测必然不通 ——
            要是还继续判定，就会"拆→探不通→再判僵死→再拆"来回打架。
            直接跳过本轮，等 Service 那边 endRebuild() 之后再恢复。 */
@@ -243,6 +279,10 @@ public final class TunnelWatchdog {
         /* ---- 证据 A：真实连通性（唯一硬证据） ---- */
         int latency = ServerTester.testCurrentVpnConnectivity();
         if (latency > 0) {
+            if (wakeConfirmPending) {
+                Log.i(TAG, "长睡唤醒后二次探测已通（" + latency + "ms），取消冷重启");
+                wakeConfirmPending = false;
+            }
             if (failStreak > 0) {
                 Log.i(TAG, "隧道已恢复正常（延迟 " + latency + "ms），僵死计数清零");
             }
@@ -252,6 +292,25 @@ public final class TunnelWatchdog {
                10 分钟，之后即便网络早恢复，下次卡死也要干等 10 分钟。 */
             resetBackoff();
             lastBytes = -1;
+            return;
+        }
+
+        /* ---- ★ v2.10.25 长睡唤醒专路径（先探测再决定，两次确认防误判） ----
+           老豆实测：睡一晚起来 PAT 显示在运行但上不了网，切线路/停止启动都没用，
+           只有完全杀进程重开才行 —— 同进程 HEAL 在这种场景下救不回来，必须换进程。
+           这里不依赖心跳/字节数（冻结刚恢复时它们看着像活着），只认真实连通性探测：
+             唤醒首轮不通 → 标记挂起，等 30 秒后第二轮再探；
+             第二轮仍不通 → 发起进程级冷重启（真杀进程 + 闹钟自拉起）；
+             任一轮通了 → 取消，什么都不做（避免刚解冻网络还没就绪时误杀）。 */
+        if (wokeFromSleep && !wakeConfirmPending) {
+            wakeConfirmPending = true;
+            Log.w(TAG, "长睡唤醒首轮探测不通，标记二次确认，30 秒后复查（暂不重启）");
+            return;
+        }
+        if (!wokeFromSleep && wakeConfirmPending) {
+            wakeConfirmPending = false;
+            Log.w(TAG, "长睡唤醒第二轮探测仍不通 → 发起进程级冷重启");
+            requestColdRestart("长睡唤醒连续两次探测不通");
             return;
         }
 
@@ -356,6 +415,49 @@ public final class TunnelWatchdog {
             Log.e(TAG, "深度重连触发失败", t);
         } finally {
             healing.set(false);
+        }
+    }
+
+    /**
+     * ★ v2.10.25 进程级冷重启（区别于 doDeepHeal 的同进程重建）。
+     *
+     * 为什么不用同进程 HEAL：老豆实测长睡唤醒后 wss/TUN 半死，同进程拆建救不回来，
+     * 只有把进程彻底杀掉重开才行 —— native  lwIP 栈冻结恢复后可能有无法在同进程
+     * 复位的残留状态。所以这里让 Service 走「拆隧道 → 设闹钟 → System.exit(0)」，
+     * 新进程由 ServiceReceiver 收到闹钟后拉起，是一张白纸的全新启动。
+     *
+     * 用独立的 coldRestarting 闸，避免和已有 healing(同进程) 互相干扰。
+     */
+    private static final AtomicBoolean coldRestarting = new AtomicBoolean(false);
+
+    private static void requestColdRestart(String reason) {
+        if (!coldRestarting.compareAndSet(false, true)) {
+            Log.i(TAG, "已有冷重启在进行中，忽略本次请求");
+            return;
+        }
+        try {
+            Preferences prefs = new Preferences(appContext);
+            if (!prefs.getEnable()) {
+                Log.i(TAG, "冷重启取消：用户已关闭 VPN");
+                return;
+            }
+            /* 先让看门狗闭嘴：马上要拆 TUN + 杀进程，避免这几秒里又判一次僵死。
+               进程会被杀，static 标志随之归零，新进程不需要手动 endRebuild()。 */
+            beginRebuild();
+            Intent intent = new Intent(appContext, TProxyService.class);
+            intent.setAction(TProxyService.ACTION_COLD_RESTART);
+            appContext.startService(intent);
+
+            totalHeals++;
+            lastHealTime = System.currentTimeMillis();
+            lastHealReason = "冷重启:" + reason;
+            Log.w(TAG, "===== 已发起进程级冷重启: " + reason + " =====");
+        } catch (Throwable t) {
+            Log.e(TAG, "冷重启发起失败", t);
+        } finally {
+            /* 只清自己的闸；healing 是同进程 HEAL 的闸，别串味。
+               进程马上会被杀，static 全部归零，这里其实清不清都会重置。 */
+            coldRestarting.set(false);
         }
     }
 

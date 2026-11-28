@@ -49,6 +49,11 @@ public class TProxyService extends VpnService {
         /* 深度重连：关 TUN + 停原生层 + 停内核 + 重建，等价于关掉 App 重开，但不杀进程。
            由 TunnelWatchdog 在判定隧道僵死时触发。 */
         public static final String ACTION_HEAL = "com.x.tunnel.HEAL";
+        /* ★ v2.10.25 进程级冷重启：长睡唤醒后同进程 HEAL 救不回来时，
+           真杀进程 + 闹钟自拉起。由 TunnelWatchdog 唤醒专路径触发。 */
+        public static final String ACTION_COLD_RESTART = "com.x.tunnel.COLD_RESTART";
+        /* 闹钟回调：ServiceReceiver 收到后重新拉起服务（新进程全新启动）。 */
+        public static final String ACTION_RESTART_WAKE = "com.x.tunnel.RESTART_WAKE";
 
         public static final String EXTRA_PROFILE_ID = "profile_id";
         public static final String EXTRA_PROFILE_NAME = "profile_name";
@@ -178,12 +183,21 @@ public class TProxyService extends VpnService {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        /* ★ v2.10.25：从闹钟/广播在后台拉起服务时，Android 要求 5 秒内 startForeground，
+           否则直接抛 RemoteServiceException 杀进程。这里先挂一个占位通知保命，
+           真正连上后 createNotification() 会用节点名覆盖它（同 id=1，幂等）。 */
+        ensureForegroundEarly();
+
         if (intent != null && ACTION_DISCONNECT.equals(intent.getAction())) {
             stopService();
             return START_NOT_STICKY;
         }
         if (intent != null && ACTION_HEAL.equals(intent.getAction())) {
             healTunnel(intent);
+            return START_STICKY;
+        }
+        if (intent != null && ACTION_COLD_RESTART.equals(intent.getAction())) {
+            coldRestartTunnel();
             return START_STICKY;
         }
         if (intent != null && ACTION_SWITCH.equals(intent.getAction())) {
@@ -556,6 +570,100 @@ public class TProxyService extends VpnService {
                 }
             }
         }, "pat-switch-" + seq).start();
+    }
+
+    /* ==================== v2.10.25 长睡唤醒·进程级冷重启 ==================== */
+
+    /** 前台通知是否已经挂过（进程内幂等）。 */
+    private volatile boolean foregroundEarlyDone = false;
+
+    /**
+     * 后台拉起时 5 秒内必须有前台通知，否则 Android 直接杀服务。
+     * 从闹钟广播拉起时走这里保命；正常路径末尾的 createNotification() 会覆盖通知内容。
+     */
+    private void ensureForegroundEarly() {
+        if (foregroundEarlyDone) return;
+        try {
+            initNotificationChannel("pat");
+            createNotification("pat");
+            foregroundEarlyDone = true;
+            Log.i("pat", "前台通知已提前挂载（后台拉起保命）");
+        } catch (Throwable t) {
+            Log.w("pat", "提前挂载前台通知失败: " + t.getMessage());
+        }
+    }
+
+    /**
+     * 进程级冷重启：长睡唤醒后同进程 HEAL 救不回来，只能真杀进程重开。
+     *
+     * 流程（在后台线程跑，onStartCommand 是主线程不能 sleep）：
+     *   1. 记下当前 enable 状态（必须为 true 才重连）
+     *   2. 撤销切网监听 + 停看门狗/诊断线程 + 完整拆隧道（TUN/原生层/Go 内核）
+     *   3. 用 AlarmManager.setExactAndAllowWhileIdle 设一个 2.5 秒后的闹钟，
+     *      PendingIntent 指向 ServiceReceiver.ACTION_RESTART_WAKE
+     *      —— 必须用 allowWhileIdle，Doze 下普通闹钟会被压到维护窗口迟迟不响
+     *   4. System.exit(0) 杀掉当前 :pat 进程（干净换进程）
+     *   5. 闹钟到点 → ServiceReceiver 检查 enable → startService 拉起全新进程
+     *
+     * 防死循环：新进程是全新启动，看门狗 lastWallTickMs 从当前时刻重新锚定，
+     * 不会把"刚启动"误判成长睡；且冷重启前先看 enable，用户关了就到此为止。
+     */
+    public void coldRestartTunnel() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                Log.w("pat", "===== 进程级冷重启开始（长睡唤醒专用） =====");
+                Preferences prefs = new Preferences(TProxyService.this);
+                if (!prefs.getEnable()) {
+                    Log.i("pat", "冷重启取消：用户已关闭 VPN");
+                    return;
+                }
+                unregisterNetworkHealWatcher();
+                try { TunnelWatchdog.stop(); } catch (Throwable t) { }
+                try { stopDiagnosticsLogger(); } catch (Throwable t) { }
+                /* 完整拆隧道：顺序与 doHealInBackground 一致 */
+                try {
+                    if (tunFd != null) { tunFd.close(); tunFd = null; }
+                } catch (Throwable t) { }
+                try { TProxyStopService(); } catch (Throwable t) { }
+                try { Tunnel.stopSocksProxy(); } catch (Throwable t) { }
+
+                /* 设自拉起闹钟：allowWhileIdle 保证 Doze 下也能准时把进程拉回来 */
+                try {
+                    android.app.AlarmManager am = (android.app.AlarmManager) getSystemService(Context.ALARM_SERVICE);
+                    Intent wake = new Intent(TProxyService.this, ServiceReceiver.class);
+                    wake.setAction(ACTION_RESTART_WAKE);
+                    int flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT;
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        flags |= android.app.PendingIntent.FLAG_IMMUTABLE;
+                    }
+                    android.app.PendingIntent pi = android.app.PendingIntent.getBroadcast(
+                            TProxyService.this, 20251, wake, flags);
+                    long triggerAt = System.currentTimeMillis() + 2500L;
+                    boolean exactSet = false;
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            am.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, triggerAt, pi);
+                        } else {
+                            am.set(android.app.AlarmManager.RTC_WAKEUP, triggerAt, pi);
+                        }
+                        exactSet = true;
+                    } catch (SecurityException se) {
+                        /* Android 14+ 用户撤销了精确闹钟权限：降级为普通闹钟。
+                           设备醒着时照样 2.5 秒后响，Doze 下会被延后但不至于永远不拉起。 */
+                        Log.w("pat", "精确闹钟权限被撤销，降级为普通闹钟: " + se.getMessage());
+                    }
+                    if (!exactSet) {
+                        am.set(android.app.AlarmManager.RTC_WAKEUP, triggerAt, pi);
+                    }
+                    Log.w("pat", "自拉起闹钟已设置（2.5 秒后，精确=" + exactSet + "），即将杀进程换全新实例");
+                } catch (Throwable t) {
+                    Log.e("pat", "自拉起闹钟设置失败，进程仍将退出: " + t.getMessage());
+                }
+
+                System.exit(0);
+            }
+        }, "pat-cold-restart").start();
     }
 
     /**

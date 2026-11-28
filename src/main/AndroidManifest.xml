@@ -20,6 +20,8 @@
                         android:exported="true">
 			<intent-filter>
 				<action android:name="android.intent.action.BOOT_COMPLETED"/>
+				<!-- v2.10.25 冷重启自拉起闹钟回调 -->
+				<action android:name="com.x.tunnel.RESTART_WAKE"/>
 			</intent-filter>
 		</receiver>
                 <activity android:name=".MainActivity" android:label="@string/app_name"
@@ -46,4 +48,9 @@
 		tools:ignore="QueryAllPackagesPermission" />
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
 		android:minSdkVersion="34" />
+	<!-- v2.10.25 长睡唤醒冷重启：精确闹钟自拉起（Doze 下也要准时）；
+	     权限被用户撤销时底层自动降级为普通闹钟，不崩溃。 -->
+	<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"
+		tools:ignore="ScheduleExactAlarmPermission" />
+	<uses-permission android:name="android.permission.WAKE_LOCK"/>
 </manifest>
